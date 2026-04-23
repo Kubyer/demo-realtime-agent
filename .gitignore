@@ -1,0 +1,33 @@
+# Secrets — NEVER commit
+.env
+.env.*
+*.env
+
+# Go
+backend/bin/
+*.test
+*.out
+
+# Next.js / Node
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+frontend/dist/
+
+# ngrok / tunnel config
+ngrok.yml
+.cloudflared/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Fly.io
+fly.toml.local
