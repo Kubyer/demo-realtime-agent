@@ -21,7 +21,6 @@ type Config struct {
 
 	HTTPPort string
 	LogLevel string
-	NgrokURL string // URL publique ngrok, ex: https://xxxx.ngrok-free.app
 }
 
 // Load charge d'abord le fichier .env à la racine du projet (chemin relatif ../
@@ -34,11 +33,10 @@ func Load() (*Config, error) {
 		SonioxWSURL: getEnvOrDefault("SONIOX_WS_URL", "wss://stt-rt.soniox.com/transcribe-websocket"),
 		// moonshotai/gpt-oss-20b : ~950 t/s sur LPU Groq — MoE 20B actifs,
 		// meilleur raisonnement juridique + tool calling vs llama-3.1-8b-instant (700 t/s)
-		GroqModel:   getEnvOrDefault("GROQ_MODEL", "moonshotai/gpt-oss-20b"),
-		CartesiaWSURL:  getEnvOrDefault("CARTESIA_WS_URL", "wss://api.cartesia.ai/tts/websocket"),
-		HTTPPort:       getEnvOrDefault("HTTP_PORT", "8080"),
-		LogLevel:       getEnvOrDefault("LOG_LEVEL", "info"),
-		NgrokURL:       getEnvOrDefault("NGROK_URL", ""),
+		GroqModel:     getEnvOrDefault("GROQ_MODEL", "moonshotai/gpt-oss-20b"),
+		CartesiaWSURL: getEnvOrDefault("CARTESIA_WS_URL", "wss://api.cartesia.ai/tts/websocket"),
+		HTTPPort:      getEnvOrDefault("HTTP_PORT", "8080"),
+		LogLevel:      getEnvOrDefault("LOG_LEVEL", "info"),
 	}
 
 	// CARTESIA_VOICE_ID peut être fourni directement ou via CARTESIA_FEMALE (alias)

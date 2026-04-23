@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -17,9 +18,8 @@ import (
 // ---------------------------------------------------------------------------
 
 // startConfig is the first message sent to Soniox to open a transcription session.
-// api_key goes in the JSON body (Soniox WebSocket protocol).
+// Authentication is done via the Authorization header, not here.
 type startConfig struct {
-	APIKey                  string   `json:"api_key"`
 	Model                   string   `json:"model"`
 	AudioFormat             string   `json:"audio_format"`
 	SampleRate              int      `json:"sample_rate"`
@@ -86,18 +86,20 @@ func (c *Client) Stream(
 	defer close(interimCh)
 	defer close(finalCh)
 
-	// --- Connect (no special headers needed) ---
+	// --- Connect with Authorization header ---
 	t0 := time.Now()
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.wsURL, nil)
+	headers := http.Header{
+		"Authorization": {"Bearer " + c.apiKey},
+	}
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.wsURL, headers)
 	if err != nil {
 		return fmt.Errorf("soniox dial: %w", err)
 	}
 	defer conn.Close()
 	c.log.Info("stt: connected", "latency_ms", time.Since(t0).Milliseconds())
 
-	// --- Send initial config with api_key in JSON body ---
+	// --- Send initial config (no api_key in body) ---
 	cfg := startConfig{
-		APIKey:                  c.apiKey,
 		Model:                   "stt-rt-v4",
 		AudioFormat:             "mulaw",
 		SampleRate:              8000,

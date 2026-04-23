@@ -2,13 +2,11 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -37,13 +35,6 @@ func main() {
 	hub := events.NewHub(log)
 	go hub.Run()
 
-	// ngrokURL is the public URL exposed by ngrok (e.g. https://xxxx.ngrok-free.app).
-	// Set via NGROK_URL env var or .env file.
-	ngrokURL := cfg.NgrokURL
-	if ngrokURL == "" {
-		log.Warn("NGROK_URL not set — /twiml will return 503 until it is configured")
-	}
-
 	sessCfg := session.Config{
 		SonioxAPIKey:    cfg.SonioxAPIKey,
 		SonioxWSURL:     cfg.SonioxWSURL,
@@ -56,24 +47,6 @@ func main() {
 	manager := session.NewManager(sessCfg, hub, log)
 
 	mux := http.NewServeMux()
-
-	// /twiml — TwiML webhook appelé par Twilio quand une personne appelle le numéro.
-	// Twilio lit ce XML et connecte l'appel au WebSocket /twilio/stream.
-	mux.HandleFunc("/twiml", func(w http.ResponseWriter, r *http.Request) {
-		if ngrokURL == "" {
-			http.Error(w, "NGROK_URL not configured", http.StatusServiceUnavailable)
-			return
-		}
-		wsURL := "wss://" + strings.TrimPrefix(strings.TrimPrefix(ngrokURL, "https://"), "http://") + "/twilio/stream"
-		w.Header().Set("Content-Type", "text/xml")
-		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url=%q/>
-  </Connect>
-</Response>`, wsURL)
-		log.Info("/twiml served", "ws_url", wsURL)
-	})
 
 	// /twilio/stream — Twilio Media Stream WebSocket.
 	// Twilio opens this after the TwiML <Stream> verb.

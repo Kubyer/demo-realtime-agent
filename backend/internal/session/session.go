@@ -16,7 +16,7 @@ import (
 	"github.com/legalplace/voiceagent/internal/tts"
 )
 
-const systemPrompt = `Tu es un assistant juridique IA de LegalPlace. Tu aides les clients à prendre des rendez-vous avec des avocats et à comprendre leurs démarches juridiques. Sois concis, clair et professionnel. Réponds toujours en français.`
+const systemPrompt = `Tu es un assistant IA vocal. Sois concis, clair et professionnel. Réponds toujours en français.`
 
 // Session owns all goroutines and components for a single call leg.
 type Session struct {

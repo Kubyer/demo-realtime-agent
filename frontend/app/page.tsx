@@ -13,10 +13,10 @@ export default function Home() {
     }}>
       <div style={{ textAlign: 'center' }}>
         <h1 style={{ fontSize: '1.75rem', fontWeight: 700, marginBottom: '0.5rem' }}>
-          LegalPlace Voice Agent
+          Voice Agent
         </h1>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem' }}>
-          Assistant juridique IA — Ultra-basse latence
+          Ultra-low-latency AI voice assistant
         </p>
       </div>
       <VoiceSession />
