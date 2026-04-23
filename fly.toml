@@ -1,9 +1,8 @@
-app = "voiceagent"
+app = "voiceagent-rtd"
 primary_region = "cdg"
 
 [build]
   dockerfile = "backend/Dockerfile"
-  dockerfile_context = "backend"
 
 [env]
   HTTP_PORT = "8080"
