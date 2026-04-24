@@ -177,11 +177,10 @@ func (s *Session) run(ctx context.Context) {
 // tSTTFinal is the timestamp when the STT final result was received, used to
 // compute end-to-end latency (STT → LLM TTFT → TTS first audio chunk).
 func (s *Session) runTTSTurn(ctx context.Context, sentenceCh <-chan string, chunkID string, tSTTFinal time.Time) {
-	turnCtx, turnCancel := context.WithCancel(ctx)
-	defer turnCancel()
-
+	// Use session ctx directly — a turn-scoped child context would cancel
+	// Cartesia the moment this function returns (before any audio arrives).
 	tTTSDial := time.Now()
-	audioCh, err := s.tts.Stream(turnCtx, sentenceCh)
+	audioCh, err := s.tts.Stream(ctx, sentenceCh)
 	if err != nil {
 		s.log.Error("session: TTS dial error", "err", err)
 		return
