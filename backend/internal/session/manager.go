@@ -4,8 +4,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/legalplace/voiceagent/internal/events"
-	"github.com/legalplace/voiceagent/internal/transport"
+	"github.com/demo-realtime-agent/voiceagent/internal/events"
+	"github.com/demo-realtime-agent/voiceagent/internal/transport"
 )
 
 // Manager maintains the active session map and enforces one session per

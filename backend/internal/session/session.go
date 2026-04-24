@@ -7,13 +7,13 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 
-	"github.com/legalplace/voiceagent/internal/dispatcher"
-	"github.com/legalplace/voiceagent/internal/events"
-	"github.com/legalplace/voiceagent/internal/llm"
-	"github.com/legalplace/voiceagent/internal/stt"
-	"github.com/legalplace/voiceagent/internal/tools"
-	"github.com/legalplace/voiceagent/internal/transport"
-	"github.com/legalplace/voiceagent/internal/tts"
+	"github.com/demo-realtime-agent/voiceagent/internal/dispatcher"
+	"github.com/demo-realtime-agent/voiceagent/internal/events"
+	"github.com/demo-realtime-agent/voiceagent/internal/llm"
+	"github.com/demo-realtime-agent/voiceagent/internal/stt"
+	"github.com/demo-realtime-agent/voiceagent/internal/tools"
+	"github.com/demo-realtime-agent/voiceagent/internal/transport"
+	"github.com/demo-realtime-agent/voiceagent/internal/tts"
 )
 
 const systemPrompt = `Tu es un assistant IA vocal. Sois concis, clair et professionnel. Réponds toujours en français.`

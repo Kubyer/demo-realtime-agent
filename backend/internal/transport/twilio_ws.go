@@ -141,6 +141,7 @@ func (t *TwilioWebSocket) ClearBuffer() {
 }
 
 func (t *TwilioWebSocket) writeMediaFrame(chunk []byte) error {
+	t.log.Debug("twilio: writing media frame", "bytes", len(chunk), "stream_sid", t.streamSid)
 	encoded := base64.StdEncoding.EncodeToString(chunk)
 	msg := twilioOutbound{
 		Event:     "media",

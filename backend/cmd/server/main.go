@@ -14,10 +14,10 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/legalplace/voiceagent/config"
-	"github.com/legalplace/voiceagent/internal/events"
-	"github.com/legalplace/voiceagent/internal/session"
-	"github.com/legalplace/voiceagent/internal/transport"
+	"github.com/demo-realtime-agent/voiceagent/config"
+	"github.com/demo-realtime-agent/voiceagent/internal/events"
+	"github.com/demo-realtime-agent/voiceagent/internal/session"
+	"github.com/demo-realtime-agent/voiceagent/internal/transport"
 )
 
 var upgrader = websocket.Upgrader{

@@ -1,4 +1,4 @@
-module github.com/legalplace/voiceagent
+module github.com/demo-realtime-agent/voiceagent
 
 go 1.22
 

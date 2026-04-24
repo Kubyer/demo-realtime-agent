@@ -33,9 +33,11 @@ type cartesiaFormat struct {
 
 // cartesiaResponse is a chunk received from Cartesia.
 type cartesiaResponse struct {
-	Type string `json:"type"`
-	Data string `json:"data"` // base64-encoded PCM/mulaw chunk
-	Done bool   `json:"done"`
+	Type       string `json:"type"`
+	Data       string `json:"data"` // base64-encoded PCM/mulaw chunk
+	Done       bool   `json:"done"`
+	Error      string `json:"error,omitempty"`
+	StatusCode int    `json:"status_code,omitempty"`
 }
 
 // Client streams text to Cartesia and returns audio chunks.
@@ -71,36 +73,54 @@ func (c *Client) Stream(ctx context.Context, sentenceCh <-chan string) (<-chan [
 	audioCh := make(chan []byte, 64)
 
 	// Sender: sentences → Cartesia WS.
-	// Does NOT send a CloseMessage — that is the receiver's job after done=true,
-	// so Cartesia is not interrupted mid-generation.
+	// Cartesia protocol: all sentences except the last use continue:true (context stays
+	// open for more text); the last sentence uses continue:false (signals end of input).
+	// We use a one-item look-ahead buffer: hold the current sentence, send the previous
+	// one when the next arrives, send the held sentence with continue:false on close.
 	go func() {
 		contextID := "turn-1"
-		first := true
+		send := func(sentence string, cont bool) bool {
+			req := cartesiaRequest{
+				ModelID:    "sonic-2",
+				Transcript: sentence,
+				Voice:      cartesiaVoice{Mode: "id", ID: c.voiceID},
+				OutputFormat: cartesiaFormat{
+					Container:  "raw",
+					Encoding:   "pcm_mulaw",
+					SampleRate: 8000,
+				},
+				ContextID: contextID,
+				Continue:  cont,
+			}
+			data, _ := json.Marshal(req)
+			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				c.log.Warn("cartesia send", "err", err)
+				return false
+			}
+			c.log.Debug("cartesia: sent sentence", "text", sentence, "continue", cont)
+			return true
+		}
+
+		var pending string
+		hasPending := false
 		for {
 			select {
 			case sentence, ok := <-sentenceCh:
 				if !ok {
+					// Channel closed: flush pending sentence as the final one.
+					if hasPending {
+						send(pending, false)
+					}
 					return
 				}
-				req := cartesiaRequest{
-					ModelID:    "sonic-2",
-					Transcript: sentence,
-					Voice:      cartesiaVoice{Mode: "id", ID: c.voiceID},
-					OutputFormat: cartesiaFormat{
-						Container:  "raw",
-						Encoding:   "pcm_mulaw",
-						SampleRate: 8000,
-					},
-					ContextID: contextID,
-					Continue:  !first,
+				// Send previously buffered sentence with continue:true (more is coming).
+				if hasPending {
+					if !send(pending, true) {
+						return
+					}
 				}
-				first = false
-				data, _ := json.Marshal(req)
-				if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-					c.log.Warn("cartesia send", "err", err)
-					return
-				}
-				c.log.Debug("cartesia: sent sentence", "text", sentence)
+				pending = sentence
+				hasPending = true
 			case <-ctx.Done():
 				return
 			}
@@ -112,6 +132,7 @@ func (c *Client) Stream(ctx context.Context, sentenceCh <-chan string) (<-chan [
 	go func() {
 		defer close(audioCh)
 		defer conn.Close() //nolint:errcheck
+		chunks := 0
 		for {
 			_, raw, err := conn.ReadMessage()
 			if err != nil {
@@ -122,25 +143,36 @@ func (c *Client) Stream(ctx context.Context, sentenceCh <-chan string) (<-chan [
 			}
 			var resp cartesiaResponse
 			if err := json.Unmarshal(raw, &resp); err != nil {
-				c.log.Warn("cartesia unmarshal", "err", err)
+				c.log.Warn("cartesia unmarshal", "err", err, "raw", string(raw))
 				continue
 			}
 			if resp.Done {
-				c.log.Debug("cartesia: done")
-				// Graceful close after all audio is received.
+				if resp.Type == "error" || resp.Error != "" {
+					c.log.Error("cartesia: error from API",
+						"type", resp.Type,
+						"status_code", resp.StatusCode,
+						"error", resp.Error,
+						"raw", string(raw),
+					)
+				} else if chunks == 0 {
+					c.log.Warn("cartesia: done with 0 audio chunks", "raw", string(raw))
+				} else {
+					c.log.Debug("cartesia: done", "chunks", chunks)
+				}
 				conn.WriteMessage(websocket.CloseMessage, //nolint:errcheck
 					websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 				return
 			}
 			if resp.Type != "chunk" || resp.Data == "" {
-				c.log.Debug("cartesia: non-chunk msg", "type", resp.Type)
+				c.log.Info("cartesia: non-chunk msg", "type", resp.Type, "raw", string(raw))
 				continue
 			}
 			audio, err := base64.StdEncoding.DecodeString(resp.Data)
 			if err != nil {
 				audio = []byte(resp.Data)
 			}
-			c.log.Debug("cartesia: audio chunk", "bytes", len(audio))
+			chunks++
+			c.log.Debug("cartesia: audio chunk", "bytes", len(audio), "n", chunks)
 			select {
 			case audioCh <- audio:
 			case <-ctx.Done():

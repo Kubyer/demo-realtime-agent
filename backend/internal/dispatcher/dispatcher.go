@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/legalplace/voiceagent/internal/transport"
+	"github.com/demo-realtime-agent/voiceagent/internal/transport"
 )
 
 // AudioSource represents a named, cancellable audio stream.
