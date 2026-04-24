@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sync"
 
 	"github.com/gorilla/websocket"
 )
@@ -34,10 +33,9 @@ type cartesiaFormat struct {
 
 // cartesiaResponse is a chunk received from Cartesia.
 type cartesiaResponse struct {
-	Type    string `json:"type"`
-	Data    string `json:"data"` // base64-encoded PCM/mulaw chunk
-	Done    bool   `json:"done"`
-	ChunkID string `json:"context_id"`
+	Type string `json:"type"`
+	Data string `json:"data"` // base64-encoded PCM/mulaw chunk
+	Done bool   `json:"done"`
 }
 
 // Client streams text to Cartesia and returns audio chunks.
@@ -55,6 +53,11 @@ func NewClient(wsURL, apiKey, voiceID string, log *slog.Logger) *Client {
 // Stream connects to Cartesia, sends sentences from sentenceCh, and writes
 // received audio chunks to the returned channel. The channel is closed when
 // all sentences are synthesised or ctx is cancelled.
+//
+// Design: the sender goroutine sends sentences without closing the WS (a
+// premature CloseMessage would cause Cartesia to abort audio generation before
+// streaming it back). The receiver exits when Cartesia signals done=true, then
+// sends the CloseMessage itself.
 func (c *Client) Stream(ctx context.Context, sentenceCh <-chan string) (<-chan []byte, error) {
 	header := map[string][]string{
 		"X-API-Key":        {c.apiKey},
@@ -65,16 +68,12 @@ func (c *Client) Stream(ctx context.Context, sentenceCh <-chan string) (<-chan [
 		return nil, fmt.Errorf("cartesia dial: %w", err)
 	}
 
-	audioCh := make(chan []byte, 32)
-	var wg sync.WaitGroup
+	audioCh := make(chan []byte, 64)
 
-	// Sender: sentence → Cartesia WS.
-	wg.Add(1)
+	// Sender: sentences → Cartesia WS.
+	// Does NOT send a CloseMessage — that is the receiver's job after done=true,
+	// so Cartesia is not interrupted mid-generation.
 	go func() {
-		defer wg.Done()
-		defer conn.WriteMessage(websocket.CloseMessage, //nolint:errcheck
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-
 		contextID := "turn-1"
 		first := true
 		for {
@@ -84,7 +83,7 @@ func (c *Client) Stream(ctx context.Context, sentenceCh <-chan string) (<-chan [
 					return
 				}
 				req := cartesiaRequest{
-					ModelID:    "sonic-english",
+					ModelID:    "sonic-2",
 					Transcript: sentence,
 					Voice:      cartesiaVoice{Mode: "id", ID: c.voiceID},
 					OutputFormat: cartesiaFormat{
@@ -101,6 +100,7 @@ func (c *Client) Stream(ctx context.Context, sentenceCh <-chan string) (<-chan [
 					c.log.Warn("cartesia send", "err", err)
 					return
 				}
+				c.log.Debug("cartesia: sent sentence", "text", sentence)
 			case <-ctx.Done():
 				return
 			}
@@ -108,9 +108,10 @@ func (c *Client) Stream(ctx context.Context, sentenceCh <-chan string) (<-chan [
 	}()
 
 	// Receiver: Cartesia WS → audioCh.
-	wg.Add(1)
+	// Exits on done=true, then closes the connection cleanly.
 	go func() {
-		defer wg.Done()
+		defer close(audioCh)
+		defer conn.Close() //nolint:errcheck
 		for {
 			_, raw, err := conn.ReadMessage()
 			if err != nil {
@@ -124,26 +125,28 @@ func (c *Client) Stream(ctx context.Context, sentenceCh <-chan string) (<-chan [
 				c.log.Warn("cartesia unmarshal", "err", err)
 				continue
 			}
+			if resp.Done {
+				c.log.Debug("cartesia: done")
+				// Graceful close after all audio is received.
+				conn.WriteMessage(websocket.CloseMessage, //nolint:errcheck
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+				return
+			}
 			if resp.Type != "chunk" || resp.Data == "" {
+				c.log.Debug("cartesia: non-chunk msg", "type", resp.Type)
 				continue
 			}
 			audio, err := base64.StdEncoding.DecodeString(resp.Data)
 			if err != nil {
-				// Cartesia may send raw binary for some encodings.
 				audio = []byte(resp.Data)
 			}
+			c.log.Debug("cartesia: audio chunk", "bytes", len(audio))
 			select {
 			case audioCh <- audio:
 			case <-ctx.Done():
 				return
 			}
 		}
-	}()
-
-	go func() {
-		wg.Wait()
-		close(audioCh)
-		conn.Close() //nolint:errcheck
 	}()
 
 	return audioCh, nil
