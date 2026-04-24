@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -47,6 +49,26 @@ func main() {
 	manager := session.NewManager(sessCfg, hub, log)
 
 	mux := http.NewServeMux()
+
+	// /twiml — webhook HTTP appelé par Twilio à l'arrivée d'un appel.
+	// Retourne le XML qui demande à Twilio d'ouvrir un Media Stream WebSocket.
+	// Configurer PUBLIC_URL=https://voiceagent-rtd.fly.dev (ou tout autre hôte public).
+	mux.HandleFunc("/twiml", func(w http.ResponseWriter, r *http.Request) {
+		publicURL := os.Getenv("PUBLIC_URL")
+		if publicURL == "" {
+			// Fly.io injecte FLY_APP_NAME automatiquement.
+			if app := os.Getenv("FLY_APP_NAME"); app != "" {
+				publicURL = "https://" + app + ".fly.dev"
+			}
+		}
+		if publicURL == "" {
+			http.Error(w, "PUBLIC_URL not configured", http.StatusServiceUnavailable)
+			return
+		}
+		host := strings.TrimPrefix(strings.TrimPrefix(publicURL, "https://"), "http://")
+		w.Header().Set("Content-Type", "text/xml")
+		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="wss://%s/twilio/stream"/></Connect></Response>`, host)
+	})
 
 	// /twilio/stream — Twilio Media Stream WebSocket.
 	// Twilio opens this after the TwiML <Stream> verb.
