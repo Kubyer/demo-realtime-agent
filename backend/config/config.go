@@ -31,9 +31,9 @@ func Load() (*Config, error) {
 	c := &Config{
 		// SonioxWSURL : Soniox a migré de gRPC à WebSocket (plus de protoc nécessaire)
 		SonioxWSURL: getEnvOrDefault("SONIOX_WS_URL", "wss://stt-rt.eu.soniox.com/transcribe-websocket"),
-		// moonshotai/gpt-oss-20b : ~950 t/s sur LPU Groq — MoE 20B actifs,
+		// openai/gpt-oss-20b : ~950 t/s sur LPU Groq — MoE 20B actifs,
 		// meilleur raisonnement juridique + tool calling vs llama-3.1-8b-instant (700 t/s)
-		GroqModel:     getEnvOrDefault("GROQ_MODEL", "moonshotai/gpt-oss-20b"),
+		GroqModel:     getEnvOrDefault("GROQ_MODEL", "openai/gpt-oss-20b"),
 		CartesiaWSURL: getEnvOrDefault("CARTESIA_WS_URL", "wss://api.cartesia.ai/tts/websocket"),
 		HTTPPort:      getEnvOrDefault("HTTP_PORT", "8080"),
 		LogLevel:      getEnvOrDefault("LOG_LEVEL", "info"),
