@@ -10,7 +10,7 @@ import (
 
 type Config struct {
 	SonioxAPIKey string
-	SonioxWSURL  string // wss://stt-rt.soniox.com/transcribe-websocket
+	SonioxWSURL  string // wss://stt-rt.eu.soniox.com/transcribe-websocket (EU region)
 
 	GroqAPIKey string
 	GroqModel  string
@@ -30,7 +30,7 @@ func Load() (*Config, error) {
 
 	c := &Config{
 		// SonioxWSURL : Soniox a migré de gRPC à WebSocket (plus de protoc nécessaire)
-		SonioxWSURL: getEnvOrDefault("SONIOX_WS_URL", "wss://stt-rt.soniox.com/transcribe-websocket"),
+		SonioxWSURL: getEnvOrDefault("SONIOX_WS_URL", "wss://stt-rt.eu.soniox.com/transcribe-websocket"),
 		// moonshotai/gpt-oss-20b : ~950 t/s sur LPU Groq — MoE 20B actifs,
 		// meilleur raisonnement juridique + tool calling vs llama-3.1-8b-instant (700 t/s)
 		GroqModel:     getEnvOrDefault("GROQ_MODEL", "moonshotai/gpt-oss-20b"),
