@@ -62,15 +62,29 @@ type Result struct {
 	StartTime float64 // seconds; kept for compat
 }
 
-// Client is a Soniox WebSocket STT client for a single call session.
-type Client struct {
-	apiKey string
-	wsURL  string
-	log    *slog.Logger
+// AudioConfig describes the raw audio format sent to Soniox.
+type AudioConfig struct {
+	Format      string // "mulaw" | "pcm_s16le"
+	SampleRate  int    // e.g. 8000 | 16000
+	NumChannels int    // typically 1
 }
 
-func NewClient(apiKey, wsURL string, log *slog.Logger) *Client {
-	return &Client{apiKey: apiKey, wsURL: wsURL, log: log}
+// TwilioAudio is the default config for Twilio media streams (G.711 µ-law 8 kHz).
+var TwilioAudio = AudioConfig{Format: "mulaw", SampleRate: 8000, NumChannels: 1}
+
+// BrowserAudio is the config for browser AudioWorklet streams (PCM s16le 16 kHz).
+var BrowserAudio = AudioConfig{Format: "pcm_s16le", SampleRate: 16000, NumChannels: 1}
+
+// Client is a Soniox WebSocket STT client for a single call session.
+type Client struct {
+	apiKey   string
+	wsURL    string
+	audioCfg AudioConfig
+	log      *slog.Logger
+}
+
+func NewClient(apiKey, wsURL string, audioCfg AudioConfig, log *slog.Logger) *Client {
+	return &Client{apiKey: apiKey, wsURL: wsURL, audioCfg: audioCfg, log: log}
 }
 
 // Stream starts a WebSocket stream for the lifetime of ctx.
@@ -98,9 +112,9 @@ func (c *Client) Stream(
 	cfg := startConfig{
 		APIKey:                  c.apiKey,
 		Model:                   "stt-rt-v4",
-		AudioFormat:             "mulaw",
-		SampleRate:              8000,
-		NumChannels:             1,
+		AudioFormat:             c.audioCfg.Format,
+		SampleRate:              c.audioCfg.SampleRate,
+		NumChannels:             c.audioCfg.NumChannels,
 		EnableEndpointDetection: true,
 		LanguageHints:           []string{"fr"},
 	}

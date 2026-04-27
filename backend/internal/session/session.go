@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -16,7 +17,32 @@ import (
 	"github.com/demo-realtime-agent/voiceagent/internal/tts"
 )
 
-const systemPrompt = `Tu es un assistant IA vocal. Sois concis, clair et professionnel. Réponds toujours en français.`
+// ---------------------------------------------------------------------------
+// Dynamic system prompt — shared across Twilio and browser sessions.
+// ---------------------------------------------------------------------------
+
+var (
+	promptMu      sync.RWMutex
+	activePrompt  = `Tu es un assistant IA vocal. Sois concis, clair et professionnel. Réponds toujours en français.`
+)
+
+// GetSystemPrompt returns the current system prompt.
+func GetSystemPrompt() string {
+	promptMu.RLock()
+	defer promptMu.RUnlock()
+	return activePrompt
+}
+
+// SetSystemPrompt updates the system prompt; takes effect on the next call.
+func SetSystemPrompt(p string) {
+	promptMu.Lock()
+	defer promptMu.Unlock()
+	activePrompt = p
+}
+
+// ---------------------------------------------------------------------------
+// Session
+// ---------------------------------------------------------------------------
 
 // Session owns all goroutines and components for a single call leg.
 type Session struct {
@@ -30,13 +56,14 @@ type Session struct {
 	llm        *llm.GroqClient
 	tts        *tts.Client
 	hub        *events.Hub
+	calls      CallStorer
 	log        *slog.Logger
 }
 
 // Done returns a channel closed when the session has fully shut down.
 func (s *Session) Done() <-chan struct{} { return s.done }
 
-// Config carries the per-session API credentials.
+// Config carries the per-session API credentials and transport options.
 type Config struct {
 	SonioxAPIKey    string
 	SonioxWSURL     string
@@ -45,6 +72,8 @@ type Config struct {
 	CartesiaAPIKey  string
 	CartesiaWSURL   string
 	CartesiaVoiceID string
+	// Source is "twilio" or "browser"; determines STT audio format.
+	Source string
 }
 
 // NewSession wires all components for a single call and starts the goroutine tree.
@@ -52,15 +81,23 @@ func NewSession(
 	id string,
 	tr transport.AudioTransport,
 	hub *events.Hub,
+	calls CallStorer,
 	cfg Config,
 	log *slog.Logger,
 ) *Session {
 	ctx, cancel := context.WithCancel(context.Background())
 
+	var audioCfg stt.AudioConfig
+	if cfg.Source == "browser" {
+		audioCfg = stt.BrowserAudio
+	} else {
+		audioCfg = stt.TwilioAudio
+	}
+
 	sim := tools.NewSimulator()
 	groqClient := llm.NewGroqClient(cfg.GroqAPIKey, cfg.GroqModel, sim, llm.DefaultTools(), log)
 	ttsClient := tts.NewClient(cfg.CartesiaWSURL, cfg.CartesiaAPIKey, cfg.CartesiaVoiceID, log)
-	sttClient := stt.NewClient(cfg.SonioxAPIKey, cfg.SonioxWSURL, log)
+	sttClient := stt.NewClient(cfg.SonioxAPIKey, cfg.SonioxWSURL, audioCfg, log)
 	disp := dispatcher.New(tr, hub, log)
 
 	s := &Session{
@@ -73,8 +110,11 @@ func NewSession(
 		llm:        groqClient,
 		tts:        ttsClient,
 		hub:        hub,
+		calls:      calls,
 		log:        log,
 	}
+
+	calls.Start(id, cfg.Source)
 
 	go func() {
 		defer close(s.done)
@@ -88,7 +128,10 @@ func (s *Session) Stop() { s.cancel() }
 
 func (s *Session) run(ctx context.Context) {
 	s.hub.BroadcastSessionStart(s.ID)
-	defer s.hub.BroadcastSessionEnd(s.ID)
+	defer func() {
+		s.hub.BroadcastSessionEnd(s.ID)
+		s.calls.End(s.ID)
+	}()
 	s.log.Info("session started", "session_id", s.ID)
 
 	audioCh, err := s.transport.ReadStream(ctx)
@@ -123,7 +166,8 @@ func (s *Session) run(ctx context.Context) {
 		}
 	}()
 
-	history := llm.NewHistory(systemPrompt)
+	// Snapshot prompt at session start so mid-call edits don't affect this leg.
+	history := llm.NewHistory(GetSystemPrompt())
 
 	for {
 		select {
@@ -144,6 +188,7 @@ func (s *Session) run(ctx context.Context) {
 				Content: result.Text,
 			})
 			s.hub.BroadcastFinal(s.hub.NextChunkID(), result.Text)
+			s.calls.AppendTurn(s.ID, "user", result.Text)
 
 			// sentenceCh carries text from the LLM to the TTS pipeline.
 			sentenceCh := make(chan string, 4)
@@ -166,7 +211,23 @@ func (s *Session) run(ctx context.Context) {
 			)
 			close(sentenceCh)
 
+			// Record the assistant turn from the last history entry.
+			s.recordAssistantTurn(history)
+
 		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// recordAssistantTurn reads the most recent assistant message from history
+// and appends it to the call transcript.
+func (s *Session) recordAssistantTurn(history *llm.History) {
+	msgs := history.Snapshot()
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role == openai.ChatMessageRoleAssistant && m.Content != "" {
+			s.calls.AppendTurn(s.ID, "assistant", m.Content)
 			return
 		}
 	}
@@ -174,11 +235,7 @@ func (s *Session) run(ctx context.Context) {
 
 // runTTSTurn connects to Cartesia, streams the sentence channel, and forwards
 // the resulting audio to the dispatcher at tool-result priority (priority 1).
-// tSTTFinal is the timestamp when the STT final result was received, used to
-// compute end-to-end latency (STT → LLM TTFT → TTS first audio chunk).
 func (s *Session) runTTSTurn(ctx context.Context, sentenceCh <-chan string, chunkID string, tSTTFinal time.Time) {
-	// Use session ctx directly — a turn-scoped child context would cancel
-	// Cartesia the moment this function returns (before any audio arrives).
 	tTTSDial := time.Now()
 	audioCh, err := s.tts.Stream(ctx, sentenceCh)
 	if err != nil {
@@ -213,17 +270,15 @@ func (s *Session) playFiller(ctx context.Context, chunkID string) {
 	}
 }
 
-// fillerAudio returns a channel emitting pre-chunked mulaw 8kHz frames for
-// "Laissez-moi regarder..." (currently: 200ms of mulaw silence as placeholder).
-// Embed a real recording with //go:embed filler.raw when available.
+// fillerAudio returns a channel emitting pre-chunked mulaw 8kHz frames
+// (200ms of silence as placeholder until a real recording is embedded).
 func fillerAudio() <-chan []byte {
 	ch := make(chan []byte, 16)
 	go func() {
 		defer close(ch)
-		// 0x7f is the mulaw silence value; 160 bytes = 20ms at 8kHz.
 		frame := make([]byte, 160)
 		for i := range frame {
-			frame[i] = 0x7f
+			frame[i] = 0x7f // mulaw silence
 		}
 		for i := 0; i < 10; i++ { // 10 × 20ms = 200ms
 			chunk := make([]byte, len(frame))

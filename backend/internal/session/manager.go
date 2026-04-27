@@ -15,22 +15,24 @@ type Manager struct {
 	sessions map[string]*Session
 	cfg      Config
 	hub      *events.Hub
+	Calls    CallStorer
 	log      *slog.Logger
 }
 
-func NewManager(cfg Config, hub *events.Hub, log *slog.Logger) *Manager {
+func NewManager(cfg Config, hub *events.Hub, calls CallStorer, log *slog.Logger) *Manager {
 	return &Manager{
 		sessions: make(map[string]*Session),
 		cfg:      cfg,
 		hub:      hub,
+		Calls:    calls,
 		log:      log,
 	}
 }
 
-// Create registers a new session for the given stream SID.
-// If a session already exists for that SID (duplicate connection), it is
+// Create registers a new session. source is "twilio" or "browser".
+// If a session already exists for that ID (duplicate connection), it is
 // stopped first.
-func (m *Manager) Create(id string, tr transport.AudioTransport) *Session {
+func (m *Manager) Create(id string, source string, tr transport.AudioTransport) *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -39,9 +41,12 @@ func (m *Manager) Create(id string, tr transport.AudioTransport) *Session {
 		existing.Stop()
 	}
 
-	s := NewSession(id, tr, m.hub, m.cfg, m.log)
+	cfg := m.cfg
+	cfg.Source = source
+
+	s := NewSession(id, tr, m.hub, m.Calls, cfg, m.log)
 	m.sessions[id] = s
-	m.log.Info("session manager: created", "session_id", id, "active", len(m.sessions))
+	m.log.Info("session manager: created", "session_id", id, "source", source, "active", len(m.sessions))
 	return s
 }
 

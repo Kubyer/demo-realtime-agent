@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -21,8 +23,20 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	// In production, validate r.Host against an allowlist.
 	CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func main() {
@@ -37,6 +51,22 @@ func main() {
 	hub := events.NewHub(log)
 	go hub.Run()
 
+	// Initialise call store: Postgres when DATABASE_URL is set, in-memory otherwise.
+	var calls session.CallStorer
+	if cfg.DatabaseURL != "" {
+		pgStore, err := session.NewPGCallStore(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			log.Error("postgres connect failed", "err", err)
+			os.Exit(1)
+		}
+		defer pgStore.Close()
+		calls = pgStore
+		log.Info("call store: postgres")
+	} else {
+		calls = session.NewCallStore()
+		log.Info("call store: in-memory (set DATABASE_URL for persistence)")
+	}
+
 	sessCfg := session.Config{
 		SonioxAPIKey:    cfg.SonioxAPIKey,
 		SonioxWSURL:     cfg.SonioxWSURL,
@@ -46,17 +76,14 @@ func main() {
 		CartesiaWSURL:   cfg.CartesiaWSURL,
 		CartesiaVoiceID: cfg.CartesiaVoiceID,
 	}
-	manager := session.NewManager(sessCfg, hub, log)
+	manager := session.NewManager(sessCfg, hub, calls, log)
 
 	mux := http.NewServeMux()
 
-	// /twiml — webhook HTTP appelé par Twilio à l'arrivée d'un appel.
-	// Retourne le XML qui demande à Twilio d'ouvrir un Media Stream WebSocket.
-	// Configurer PUBLIC_URL=https://voiceagent-rtd.fly.dev (ou tout autre hôte public).
+	// /twiml — webhook called by Twilio on incoming call.
 	mux.HandleFunc("/twiml", func(w http.ResponseWriter, r *http.Request) {
 		publicURL := os.Getenv("PUBLIC_URL")
 		if publicURL == "" {
-			// Fly.io injecte FLY_APP_NAME automatiquement.
 			if app := os.Getenv("FLY_APP_NAME"); app != "" {
 				publicURL = "https://" + app + ".fly.dev"
 			}
@@ -70,10 +97,7 @@ func main() {
 		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><Response><Connect><Stream url="wss://%s/twilio/stream"/></Connect></Response>`, host)
 	})
 
-	// /twilio/stream — Twilio Media Stream WebSocket.
-	// Twilio opens this after the TwiML <Stream> verb.
-	// The TwilioWebSocket transport owns all reads from conn; this handler
-	// simply blocks until the session finishes so the HTTP connection stays open.
+	// /twilio/stream — Twilio Media Stream WebSocket (mulaw 8 kHz).
 	mux.HandleFunc("/twilio/stream", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -84,21 +108,39 @@ func main() {
 
 		sessionID := r.Header.Get("X-Twilio-Call-Sid")
 		if sessionID == "" {
-			sessionID = r.RemoteAddr // fallback for local testing
+			sessionID = r.RemoteAddr
 		}
 
 		tr := transport.NewTwilioWebSocket(conn, log)
-		sess := manager.Create(sessionID, tr)
+		sess := manager.Create(sessionID, "twilio", tr)
 		log.Info("twilio stream connected", "session_id", sessionID)
 
-		// Block until the session's goroutine tree exits (WebSocket closed or
-		// context cancelled). The transport's ReadStream goroutine owns the conn reads.
 		<-sess.Done()
 		manager.Stop(sess.ID)
 		log.Info("twilio stream disconnected", "session_id", sessionID)
 	})
 
-	// /events — UI events WebSocket consumed by the Next.js frontend.
+	// /browser/stream — Browser WebSocket (PCM s16le 16 kHz in, mulaw 8 kHz out).
+	mux.HandleFunc("/browser/stream", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Error("browser ws upgrade", "err", err)
+			return
+		}
+		defer conn.Close()
+
+		sessionID := fmt.Sprintf("browser-%d", time.Now().UnixNano())
+
+		tr := transport.NewBrowserWebSocket(conn, log)
+		sess := manager.Create(sessionID, "browser", tr)
+		log.Info("browser stream connected", "session_id", sessionID)
+
+		<-sess.Done()
+		manager.Stop(sess.ID)
+		log.Info("browser stream disconnected", "session_id", sessionID)
+	})
+
+	// /events — UI events WebSocket (fan-out to all connected frontends).
 	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -110,7 +152,6 @@ func main() {
 		cleanup := hub.Register(conn)
 		defer cleanup()
 
-		// Drain pings/control frames; we don't use client→server messages here.
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
 				break
@@ -118,7 +159,56 @@ func main() {
 		}
 	})
 
-	// /health — liveness probe for load balancers.
+	// /api/system-prompt — GET returns current prompt; PUT replaces it.
+	mux.Handle("/api/system-prompt", corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode(map[string]string{"prompt": session.GetSystemPrompt()}) //nolint:errcheck
+		case http.MethodPut:
+			body, err := io.ReadAll(io.LimitReader(r.Body, 32*1024))
+			if err != nil {
+				http.Error(w, "read error", http.StatusBadRequest)
+				return
+			}
+			var req struct {
+				Prompt string `json:"prompt"`
+			}
+			if err := json.Unmarshal(body, &req); err != nil || req.Prompt == "" {
+				http.Error(w, "invalid body", http.StatusBadRequest)
+				return
+			}
+			session.SetSystemPrompt(req.Prompt)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})))
+
+	// /api/calls — GET returns all call records (newest first).
+	mux.Handle("/api/calls", corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		records := manager.Calls.List()
+		json.NewEncoder(w).Encode(records) //nolint:errcheck
+	})))
+
+	// /api/calls/{id} — GET returns a single call record with full transcript.
+	mux.Handle("/api/calls/", corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/api/calls/")
+		if id == "" {
+			http.Error(w, "missing id", http.StatusBadRequest)
+			return
+		}
+		rec, ok := manager.Calls.Get(id)
+		if !ok {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(rec) //nolint:errcheck
+	})))
+
+	// /health — liveness probe.
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok","sessions":` + strconv.Itoa(manager.ActiveCount()) + `}`)) //nolint:errcheck
@@ -128,7 +218,7 @@ func main() {
 		Addr:         ":" + cfg.HTTPPort,
 		Handler:      mux,
 		ReadTimeout:  60 * time.Second,
-		WriteTimeout: 0, // WebSocket streams require no global write timeout
+		WriteTimeout: 0,
 		IdleTimeout:  120 * time.Second,
 	}
 

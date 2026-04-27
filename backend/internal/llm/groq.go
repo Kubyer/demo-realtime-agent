@@ -84,11 +84,12 @@ func (g *GroqClient) streamLoop(ctx context.Context, history *History, sentenceC
 	defer stream.Close()
 
 	var (
-		mode         = modeText
-		textBuf      strings.Builder   // accumulates text until sentence boundary
-		toolName     string
-		toolID       string
-		toolArgsBuf  strings.Builder  // accumulates tool_call JSON arguments
+		mode        = modeText
+		textBuf     strings.Builder // accumulates text until sentence boundary
+		fullTextBuf strings.Builder // accumulates complete assistant response for history
+		toolName    string
+		toolID      string
+		toolArgsBuf strings.Builder // accumulates tool_call JSON arguments
 	)
 
 	for {
@@ -138,6 +139,7 @@ func (g *GroqClient) streamLoop(ctx context.Context, history *History, sentenceC
 		// modeText: forward content tokens to sentence buffer.
 		if delta.Content != "" {
 			textBuf.WriteString(delta.Content)
+			fullTextBuf.WriteString(delta.Content)
 			// Flush on sentence boundary.
 			text := textBuf.String()
 			if idx := lastBoundary(text); idx >= 0 {
@@ -156,6 +158,16 @@ func (g *GroqClient) streamLoop(ctx context.Context, history *History, sentenceC
 	if mode == modeText && textBuf.Len() > 0 {
 		if err := g.flushText(ctx, textBuf.String(), sentenceCh); err != nil {
 			return err
+		}
+	}
+
+	// Record the complete assistant text response in history for multi-turn context.
+	if mode == modeText {
+		if full := strings.TrimSpace(fullTextBuf.String()); full != "" {
+			history.Append(openai.ChatCompletionMessage{
+				Role:    openai.ChatMessageRoleAssistant,
+				Content: full,
+			})
 		}
 	}
 

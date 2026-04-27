@@ -19,6 +19,8 @@ type Config struct {
 	CartesiaWSURL   string
 	CartesiaVoiceID string
 
+	DatabaseURL string // optional; falls back to in-memory store when empty
+
 	HTTPPort string
 	LogLevel string
 }
@@ -38,6 +40,8 @@ func Load() (*Config, error) {
 		HTTPPort:      getEnvOrDefault("HTTP_PORT", "8080"),
 		LogLevel:      getEnvOrDefault("LOG_LEVEL", "info"),
 	}
+
+	c.DatabaseURL = os.Getenv("DATABASE_URL")
 
 	// CARTESIA_VOICE_ID peut être fourni directement ou via CARTESIA_FEMALE (alias)
 	if v := os.Getenv("CARTESIA_VOICE_ID"); v != "" {
