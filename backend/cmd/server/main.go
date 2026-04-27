@@ -88,6 +88,8 @@ func main() {
 		ElevenLabsAPIKey:  cfg.ElevenLabsAPIKey,
 		ElevenLabsVoiceID: cfg.ElevenLabsVoiceID,
 		ElevenLabsModel:   cfg.ElevenLabsModel,
+		CartesiaAPIKey:    cfg.CartesiaAPIKey,
+		CartesiaWSURL:     cfg.CartesiaWSURL,
 		CalendlyAPIKey:  cfg.CalendlyAPIKey,
 		DB:              dbConn,
 	}
@@ -174,26 +176,34 @@ func main() {
 		}
 	})
 
-	// /api/system-prompt — GET returns current prompt; PUT replaces it.
-	mux.Handle("/api/system-prompt", corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// /api/settings — GET returns current settings; PUT replaces them.
+	mux.Handle("/api/settings", corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.Method {
 		case http.MethodGet:
-			json.NewEncoder(w).Encode(map[string]string{"prompt": session.GetSystemPrompt()}) //nolint:errcheck
+			json.NewEncoder(w).Encode(session.GetSettings()) //nolint:errcheck
 		case http.MethodPut:
-			body, err := io.ReadAll(io.LimitReader(r.Body, 32*1024))
+			body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
 			if err != nil {
 				http.Error(w, "read error", http.StatusBadRequest)
 				return
 			}
-			var req struct {
-				Prompt string `json:"prompt"`
-			}
-			if err := json.Unmarshal(body, &req); err != nil || req.Prompt == "" {
+			var req session.Settings
+			if err := json.Unmarshal(body, &req); err != nil {
 				http.Error(w, "invalid body", http.StatusBadRequest)
 				return
 			}
-			session.SetSystemPrompt(req.Prompt)
+			// Fallbacks if not provided
+			if req.VoiceProvider == "" {
+				req.VoiceProvider = "elevenlabs"
+			}
+			if req.VoiceID == "" {
+				req.VoiceID = "3C1zYzXNXNzrB66ON8rj"
+			}
+			if req.VoiceModel == "" {
+				req.VoiceModel = "eleven_flash_v2_5"
+			}
+			session.SetSettings(req)
 			w.WriteHeader(http.StatusNoContent)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

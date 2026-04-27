@@ -6,23 +6,37 @@ type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 export default function SystemPromptEditor() {
   const [prompt, setPrompt]   = useState('');
+  const [voiceProvider, setVoiceProvider] = useState('elevenlabs');
+  const [voiceId, setVoiceId] = useState('');
+  const [voiceModel, setVoiceModel] = useState('');
   const [save, setSave]       = useState<SaveState>('idle');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/system-prompt')
+    fetch('/api/settings')
       .then(r => r.json())
-      .then(d => { setPrompt(d.prompt ?? ''); setLoading(false); })
+      .then(d => { 
+        setPrompt(d.prompt ?? ''); 
+        setVoiceProvider(d.voice_provider ?? 'elevenlabs');
+        setVoiceId(d.voice_id ?? '3C1zYzXNXNzrB66ON8rj');
+        setVoiceModel(d.voice_model ?? 'eleven_flash_v2_5');
+        setLoading(false); 
+      })
       .catch(() => setLoading(false));
   }, []);
 
   const handleSave = async () => {
     setSave('saving');
     try {
-      const res = await fetch('/api/system-prompt', {
+      const res = await fetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ 
+          prompt,
+          voice_provider: voiceProvider,
+          voice_id: voiceId,
+          voice_model: voiceModel
+        }),
       });
       setSave(res.ok ? 'saved' : 'error');
     } catch {
@@ -42,17 +56,58 @@ export default function SystemPromptEditor() {
   };
 
   return (
-    <div className="w-full">
+    <div className="w-full flex flex-col gap-4">
       <div className="flex justify-between items-baseline mb-2">
+        <span className="text-[11px] text-on-surface-variant uppercase font-semibold">Prompt & Voice Settings</span>
         <span className="text-[11px] text-on-surface-variant">Takes effect on the next call</span>
       </div>
-      <textarea
-        value={loading ? 'Loading…' : prompt}
-        disabled={loading}
-        onChange={e => setPrompt(e.target.value)}
-        rows={4}
-        className="w-full bg-white border border-slate-200 rounded-lg text-on-surface text-[14px] leading-relaxed px-3 py-2.5 resize-y focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors font-sans disabled:opacity-60"
-      />
+
+      <div className="grid grid-cols-3 gap-4">
+        <div>
+          <label className="block text-[12px] font-semibold text-on-surface mb-1">Provider</label>
+          <select 
+            value={voiceProvider}
+            onChange={(e) => setVoiceProvider(e.target.value)}
+            disabled={loading}
+            className="w-full bg-white border border-slate-200 rounded-lg text-on-surface text-[14px] px-3 py-2 focus:outline-none focus:border-primary disabled:opacity-60"
+          >
+            <option value="elevenlabs">ElevenLabs</option>
+            <option value="cartesia">Cartesia</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-[12px] font-semibold text-on-surface mb-1">Voice ID</label>
+          <input 
+            type="text"
+            value={voiceId}
+            onChange={(e) => setVoiceId(e.target.value)}
+            disabled={loading}
+            className="w-full bg-white border border-slate-200 rounded-lg text-on-surface text-[14px] px-3 py-2 focus:outline-none focus:border-primary disabled:opacity-60"
+          />
+        </div>
+        <div>
+          <label className="block text-[12px] font-semibold text-on-surface mb-1">Voice Model</label>
+          <input 
+            type="text"
+            value={voiceModel}
+            onChange={(e) => setVoiceModel(e.target.value)}
+            disabled={loading}
+            className="w-full bg-white border border-slate-200 rounded-lg text-on-surface text-[14px] px-3 py-2 focus:outline-none focus:border-primary disabled:opacity-60"
+          />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-[12px] font-semibold text-on-surface mb-1">System Prompt</label>
+        <textarea
+          value={loading ? 'Loading…' : prompt}
+          disabled={loading}
+          onChange={e => setPrompt(e.target.value)}
+          rows={8}
+          className="w-full bg-white border border-slate-200 rounded-lg text-on-surface text-[14px] leading-relaxed px-3 py-2.5 resize-y focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors font-sans disabled:opacity-60"
+        />
+      </div>
+
       <div className="flex justify-end mt-2">
         <button
           onClick={handleSave}

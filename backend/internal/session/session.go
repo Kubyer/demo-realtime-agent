@@ -19,26 +19,75 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Dynamic system prompt — shared across Twilio and browser sessions.
+// Dynamic settings — shared across Twilio and browser sessions.
 // ---------------------------------------------------------------------------
 
-var (
-	promptMu      sync.RWMutex
-	activePrompt  = `Tu es un assistant IA vocal. Sois concis, clair et professionnel. Réponds toujours en français.`
-)
-
-// GetSystemPrompt returns the current system prompt.
-func GetSystemPrompt() string {
-	promptMu.RLock()
-	defer promptMu.RUnlock()
-	return activePrompt
+type Settings struct {
+	Prompt        string `json:"prompt"`
+	VoiceProvider string `json:"voice_provider"`
+	VoiceID       string `json:"voice_id"`
+	VoiceModel    string `json:"voice_model"`
 }
 
-// SetSystemPrompt updates the system prompt; takes effect on the next call.
+var (
+	settingsMu     sync.RWMutex
+	activeSettings = Settings{
+		Prompt: `Tu es Léa, l'assistant vocal intelligent de Legalplace.
+Ton objectif est d'aider l'utilisateur à réserver un appel ou une démonstration avec notre équipe.
+
+# RÈGLES DE FORMATAGE STRICTES (POUR LA SYNTHÈSE VOCALE)
+- TU PARLES À L'ORAL. Tes réponses seront lues par un synthétiseur vocal.
+- INTERDICTION ABSOLUE d'utiliser du Markdown (*, **, #, ` + "`" + `).
+- INTERDICTION ABSOLUE de faire des listes à puces ou numérotées. Fais des phrases fluides.
+- N'utilise AUCUN emoji.
+- Tu écris les nombres en toute lettre.
+- Fais des phrases TRÈS COURTES (1 ou 2 phrases maximum par tour). Garde un rythme dynamique.
+
+# INSTRUCTIONS DE COMPORTEMENT
+- Sois chaleureux, naturel et efficace.
+- Ne propose JAMAIS de date ou d'heure au hasard. Tu dois TOUJOURS utiliser tes outils pour vérifier le calendrier.
+- Si l'utilisateur te donne un jour flou (ex: "la semaine prochaine"), demande-lui quel jour l'arrange le plus avant de chercher.
+- Une fois l'heure choisie, demande-lui son prénom et son email pour finaliser la réservation.
+
+# UTILISATION DES OUTILS (TOOL CALLING)
+Tu as accès à deux outils : 'check_availability' (pour voir les créneaux) et 'book_meeting' (pour réserver).
+- [RÈGLE CRITIQUE] : Quand tu décides d'utiliser un outil, tu DOIS dire une phrase d'attente très courte juste avant.
+- Si tu utilises 'check_availability', dis UNIQUEMENT : "Laissez-moi regarder le calendrier." ou "Je vérifie les disponibilités."
+- Si tu utilises 'book_meeting', dis UNIQUEMENT : "Je bloque le créneau pour vous." ou "Je valide la réservation."
+
+# CONTEXTE DE L'APPEL
+Tu viens de décrocher. C'est toi qui lances la conversation.
+Phrase de départ obligatoire : "Bonjour, c'est Léa. Je peux vous aider à planifier une discussion avec notre équipe, quel jour vous arrangerait ?"`,
+		VoiceProvider: "elevenlabs",
+		VoiceID:       "3C1zYzXNXNzrB66ON8rj",
+		VoiceModel:    "eleven_flash_v2_5",
+	}
+)
+
+// GetSettings returns the current settings.
+func GetSettings() Settings {
+	settingsMu.RLock()
+	defer settingsMu.RUnlock()
+	return activeSettings
+}
+
+// SetSettings updates the settings; takes effect on the next call.
+func SetSettings(s Settings) {
+	settingsMu.Lock()
+	defer settingsMu.Unlock()
+	activeSettings = s
+}
+
+// GetSystemPrompt returns the current system prompt (for backwards compatibility).
+func GetSystemPrompt() string {
+	return GetSettings().Prompt
+}
+
+// SetSystemPrompt updates the system prompt (for backwards compatibility).
 func SetSystemPrompt(p string) {
-	promptMu.Lock()
-	defer promptMu.Unlock()
-	activePrompt = p
+	settingsMu.Lock()
+	defer settingsMu.Unlock()
+	activeSettings.Prompt = p
 }
 
 // ---------------------------------------------------------------------------
@@ -55,7 +104,7 @@ type Session struct {
 	dispatcher *dispatcher.AudioDispatcher
 	stt        *stt.Client
 	llm        *llm.GroqClient
-	tts        *tts.Client
+	tts        tts.Client
 	hub        *events.Hub
 	calls      CallStorer
 	log        *slog.Logger
@@ -73,6 +122,8 @@ type Config struct {
 	ElevenLabsAPIKey  string
 	ElevenLabsVoiceID string
 	ElevenLabsModel   string
+	CartesiaAPIKey    string
+	CartesiaWSURL     string
 	CalendlyAPIKey  string
 	DB              *sql.DB
 	// Source is "twilio" or "browser"; determines STT audio format.
@@ -97,9 +148,17 @@ func NewSession(
 		audioCfg = stt.TwilioAudio
 	}
 
+	settings := GetSettings()
+
 	sim := tools.NewSimulator(cfg.DB, cfg.CalendlyAPIKey)
 	groqClient := llm.NewGroqClient(cfg.GroqAPIKey, cfg.GroqModel, sim, llm.DefaultTools(), log)
-	ttsClient := tts.NewClient(cfg.ElevenLabsAPIKey, cfg.ElevenLabsVoiceID, cfg.ElevenLabsModel, log)
+	
+	var ttsClient tts.Client
+	if settings.VoiceProvider == "cartesia" {
+		ttsClient = tts.NewCartesiaClient(cfg.CartesiaWSURL, cfg.CartesiaAPIKey, settings.VoiceID, log)
+	} else {
+		ttsClient = tts.NewElevenLabsClient(cfg.ElevenLabsAPIKey, settings.VoiceID, settings.VoiceModel, log)
+	}
 	sttClient := stt.NewClient(cfg.SonioxAPIKey, cfg.SonioxWSURL, audioCfg, log)
 	disp := dispatcher.New(tr, hub, log)
 

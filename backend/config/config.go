@@ -19,6 +19,9 @@ type Config struct {
 	ElevenLabsVoiceID string
 	ElevenLabsModel   string
 
+	CartesiaAPIKey string
+	CartesiaWSURL  string
+
 	DatabaseURL string // optional; falls back to in-memory store when empty
 
 	HTTPPort string
@@ -39,11 +42,13 @@ func Load() (*Config, error) {
 		// meilleur raisonnement juridique + tool calling vs llama-3.1-8b-instant (700 t/s)
 		GroqModel:       getEnvOrDefault("GROQ_MODEL", "openai/gpt-oss-20b"),
 		ElevenLabsModel: getEnvOrDefault("ELEVENLABS_MODEL", "eleven_flash_v2_5"),
+		CartesiaWSURL:   getEnvOrDefault("CARTESIA_WS_URL", "wss://api.cartesia.ai/tts/websocket"),
 		HTTPPort:        getEnvOrDefault("HTTP_PORT", "8080"),
 		LogLevel:        getEnvOrDefault("LOG_LEVEL", "info"),
 	}
 
 	c.DatabaseURL = os.Getenv("DATABASE_URL")
+	c.CartesiaAPIKey = os.Getenv("CARTESIA_API_KEY")
 
 	c.ElevenLabsVoiceID = getEnvOrDefault("ELEVENLABS_VOICE_ID", "3C1zYzXNXNzrB66ON8rj")
 

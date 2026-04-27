@@ -20,18 +20,18 @@ type elevenLabsResponse struct {
 	IsFinal bool   `json:"isFinal"`
 }
 
-type Client struct {
+type ElevenLabsClient struct {
 	apiKey  string
 	voiceID string
 	model   string
 	log     *slog.Logger
 }
 
-func NewClient(apiKey, voiceID, model string, log *slog.Logger) *Client {
-	return &Client{apiKey: apiKey, voiceID: voiceID, model: model, log: log}
+func NewElevenLabsClient(apiKey, voiceID, model string, log *slog.Logger) *ElevenLabsClient {
+	return &ElevenLabsClient{apiKey: apiKey, voiceID: voiceID, model: model, log: log}
 }
 
-func (c *Client) Stream(ctx context.Context, sentenceCh <-chan string) (<-chan []byte, error) {
+func (c *ElevenLabsClient) Stream(ctx context.Context, sentenceCh <-chan string) (<-chan []byte, error) {
 	wsURL := fmt.Sprintf("wss://api.elevenlabs.io/v1/text-to-speech/%s/stream-input?model_id=%s&output_format=ulaw_8000", c.voiceID, c.model)
 	
 	header := map[string][]string{
