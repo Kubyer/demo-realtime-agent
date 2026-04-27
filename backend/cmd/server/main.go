@@ -85,9 +85,9 @@ func main() {
 		SonioxWSURL:     cfg.SonioxWSURL,
 		GroqAPIKey:      cfg.GroqAPIKey,
 		GroqModel:       cfg.GroqModel,
-		CartesiaAPIKey:  cfg.CartesiaAPIKey,
-		CartesiaWSURL:   cfg.CartesiaWSURL,
-		CartesiaVoiceID: cfg.CartesiaVoiceID,
+		ElevenLabsAPIKey:  cfg.ElevenLabsAPIKey,
+		ElevenLabsVoiceID: cfg.ElevenLabsVoiceID,
+		ElevenLabsModel:   cfg.ElevenLabsModel,
 		CalendlyAPIKey:  cfg.CalendlyAPIKey,
 		DB:              dbConn,
 	}

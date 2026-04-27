@@ -70,9 +70,9 @@ type Config struct {
 	SonioxWSURL     string
 	GroqAPIKey      string
 	GroqModel       string
-	CartesiaAPIKey  string
-	CartesiaWSURL   string
-	CartesiaVoiceID string
+	ElevenLabsAPIKey  string
+	ElevenLabsVoiceID string
+	ElevenLabsModel   string
 	CalendlyAPIKey  string
 	DB              *sql.DB
 	// Source is "twilio" or "browser"; determines STT audio format.
@@ -99,7 +99,7 @@ func NewSession(
 
 	sim := tools.NewSimulator(cfg.DB, cfg.CalendlyAPIKey)
 	groqClient := llm.NewGroqClient(cfg.GroqAPIKey, cfg.GroqModel, sim, llm.DefaultTools(), log)
-	ttsClient := tts.NewClient(cfg.CartesiaWSURL, cfg.CartesiaAPIKey, cfg.CartesiaVoiceID, log)
+	ttsClient := tts.NewClient(cfg.ElevenLabsAPIKey, cfg.ElevenLabsVoiceID, cfg.ElevenLabsModel, log)
 	sttClient := stt.NewClient(cfg.SonioxAPIKey, cfg.SonioxWSURL, audioCfg, log)
 	disp := dispatcher.New(tr, hub, log)
 

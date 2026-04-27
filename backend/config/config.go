@@ -15,9 +15,9 @@ type Config struct {
 	GroqAPIKey string
 	GroqModel  string
 
-	CartesiaAPIKey  string
-	CartesiaWSURL   string
-	CartesiaVoiceID string
+	ElevenLabsAPIKey  string
+	ElevenLabsVoiceID string
+	ElevenLabsModel   string
 
 	DatabaseURL string // optional; falls back to in-memory store when empty
 
@@ -37,26 +37,21 @@ func Load() (*Config, error) {
 		SonioxWSURL: getEnvOrDefault("SONIOX_WS_URL", "wss://stt-rt.eu.soniox.com/transcribe-websocket"),
 		// openai/gpt-oss-20b : ~950 t/s sur LPU Groq — MoE 20B actifs,
 		// meilleur raisonnement juridique + tool calling vs llama-3.1-8b-instant (700 t/s)
-		GroqModel:     getEnvOrDefault("GROQ_MODEL", "openai/gpt-oss-20b"),
-		CartesiaWSURL: getEnvOrDefault("CARTESIA_WS_URL", "wss://api.cartesia.ai/tts/websocket"),
-		HTTPPort:      getEnvOrDefault("HTTP_PORT", "8080"),
-		LogLevel:      getEnvOrDefault("LOG_LEVEL", "info"),
+		GroqModel:       getEnvOrDefault("GROQ_MODEL", "openai/gpt-oss-20b"),
+		ElevenLabsModel: getEnvOrDefault("ELEVENLABS_MODEL", "eleven_flash_v2_5"),
+		HTTPPort:        getEnvOrDefault("HTTP_PORT", "8080"),
+		LogLevel:        getEnvOrDefault("LOG_LEVEL", "info"),
 	}
 
 	c.DatabaseURL = os.Getenv("DATABASE_URL")
 
-	// CARTESIA_VOICE_ID peut être fourni directement ou via CARTESIA_FEMALE (alias)
-	if v := os.Getenv("CARTESIA_VOICE_ID"); v != "" {
-		c.CartesiaVoiceID = v
-	} else if v := os.Getenv("CARTESIA_FEMALE"); v != "" {
-		c.CartesiaVoiceID = v
-	}
+	c.ElevenLabsVoiceID = getEnvOrDefault("ELEVENLABS_VOICE_ID", "3C1zYzXNXNzrB66ON8rj")
 
 	required := map[string]*string{
-		"SONIOX_API_KEY":   &c.SonioxAPIKey,
-		"GROQ_API_KEY":     &c.GroqAPIKey,
-		"CARTESIA_API_KEY": &c.CartesiaAPIKey,
-		"CALENDLY_API_KEY": &c.CalendlyAPIKey,
+		"SONIOX_API_KEY":     &c.SonioxAPIKey,
+		"GROQ_API_KEY":       &c.GroqAPIKey,
+		"ELEVENLABS_API_KEY": &c.ElevenLabsAPIKey,
+		"CALENDLY_API_KEY":   &c.CalendlyAPIKey,
 	}
 	for key, ptr := range required {
 		val := os.Getenv(key)
@@ -64,10 +59,6 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("required env var %s is not set", key)
 		}
 		*ptr = val
-	}
-
-	if c.CartesiaVoiceID == "" {
-		return nil, fmt.Errorf("required env var CARTESIA_VOICE_ID (or CARTESIA_FEMALE) is not set")
 	}
 
 	return c, nil
