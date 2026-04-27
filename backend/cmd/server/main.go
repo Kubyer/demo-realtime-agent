@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	_ "github.com/lib/pq"
 	"net/http"
 	"os"
 	"os/signal"
@@ -67,6 +69,17 @@ func main() {
 		log.Info("call store: in-memory (set DATABASE_URL for persistence)")
 	}
 
+	var dbConn *sql.DB
+	if cfg.DatabaseURL != "" {
+		var err error
+		dbConn, err = sql.Open("postgres", cfg.DatabaseURL)
+		if err != nil {
+			log.Error("postgres sql connect failed", "err", err)
+			os.Exit(1)
+		}
+		defer dbConn.Close()
+	}
+
 	sessCfg := session.Config{
 		SonioxAPIKey:    cfg.SonioxAPIKey,
 		SonioxWSURL:     cfg.SonioxWSURL,
@@ -75,6 +88,8 @@ func main() {
 		CartesiaAPIKey:  cfg.CartesiaAPIKey,
 		CartesiaWSURL:   cfg.CartesiaWSURL,
 		CartesiaVoiceID: cfg.CartesiaVoiceID,
+		CalendlyAPIKey:  cfg.CalendlyAPIKey,
+		DB:              dbConn,
 	}
 	manager := session.NewManager(sessCfg, hub, calls, log)
 

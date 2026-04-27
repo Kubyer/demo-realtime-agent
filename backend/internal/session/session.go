@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"sync"
 	"time"
@@ -72,6 +73,8 @@ type Config struct {
 	CartesiaAPIKey  string
 	CartesiaWSURL   string
 	CartesiaVoiceID string
+	CalendlyAPIKey  string
+	DB              *sql.DB
 	// Source is "twilio" or "browser"; determines STT audio format.
 	Source string
 }
@@ -94,7 +97,7 @@ func NewSession(
 		audioCfg = stt.TwilioAudio
 	}
 
-	sim := tools.NewSimulator()
+	sim := tools.NewSimulator(cfg.DB, cfg.CalendlyAPIKey)
 	groqClient := llm.NewGroqClient(cfg.GroqAPIKey, cfg.GroqModel, sim, llm.DefaultTools(), log)
 	ttsClient := tts.NewClient(cfg.CartesiaWSURL, cfg.CartesiaAPIKey, cfg.CartesiaVoiceID, log)
 	sttClient := stt.NewClient(cfg.SonioxAPIKey, cfg.SonioxWSURL, audioCfg, log)

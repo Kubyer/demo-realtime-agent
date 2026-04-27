@@ -23,6 +23,8 @@ type Config struct {
 
 	HTTPPort string
 	LogLevel string
+
+	CalendlyAPIKey string
 }
 
 // Load charge d'abord le fichier .env à la racine du projet (chemin relatif ../
@@ -54,6 +56,7 @@ func Load() (*Config, error) {
 		"SONIOX_API_KEY":   &c.SonioxAPIKey,
 		"GROQ_API_KEY":     &c.GroqAPIKey,
 		"CARTESIA_API_KEY": &c.CartesiaAPIKey,
+		"CALENDLY_API_KEY": &c.CalendlyAPIKey,
 	}
 	for key, ptr := range required {
 		val := os.Getenv(key)

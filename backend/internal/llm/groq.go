@@ -251,17 +251,45 @@ func DefaultTools() []openai.Tool {
 		{
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
-				Name:        "get_calendar_availability",
-				Description: "Returns the next available appointment slots from the lawyer's calendar.",
+				Name:        "check_availability",
+				Description: "Returns the next available appointment slots from the calendar.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"date_range": map[string]any{
+						"date": map[string]any{
 							"type":        "string",
-							"description": "ISO 8601 date range, e.g. 2026-04-23/2026-04-30",
+							"description": "ISO 8601 date, e.g. 2026-04-23",
 						},
 					},
-					"required": []string{"date_range"},
+					"required": []string{"date"},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "fetch_prospect",
+				Description: "Fetches a prospect's information from the CRM using their email address.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"email": map[string]any{
+							"type":        "string",
+							"description": "The prospect's email address",
+						},
+					},
+					"required": []string{"email"},
+				},
+			},
+		},
+		{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "book_meeting",
+				Description: "Books a meeting in the calendar.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{},
 				},
 			},
 		},
