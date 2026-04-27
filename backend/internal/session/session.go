@@ -23,10 +23,11 @@ import (
 // ---------------------------------------------------------------------------
 
 type Settings struct {
-	Prompt        string `json:"prompt"`
-	VoiceProvider string `json:"voice_provider"`
-	VoiceID       string `json:"voice_id"`
-	VoiceModel    string `json:"voice_model"`
+	Prompt          string `json:"prompt"`
+	VoiceProvider   string `json:"voice_provider"`
+	VoiceID         string `json:"voice_id"`
+	VoiceModel      string `json:"voice_model"`
+	OpeningSentence string `json:"opening_sentence"`
 }
 
 var (
@@ -58,9 +59,10 @@ Tu as accès à deux outils : 'check_availability' (pour voir les créneaux) et 
 # CONTEXTE DE L'APPEL
 Tu viens de décrocher. C'est toi qui lances la conversation.
 Phrase de départ obligatoire : "Bonjour, c'est Léa. Je peux vous aider à planifier une discussion avec notre équipe, quel jour vous arrangerait ?"`,
-		VoiceProvider: "elevenlabs",
-		VoiceID:       "3C1zYzXNXNzrB66ON8rj",
-		VoiceModel:    "eleven_flash_v2_5",
+		VoiceProvider:   "elevenlabs",
+		VoiceID:         "3C1zYzXNXNzrB66ON8rj",
+		VoiceModel:      "eleven_flash_v2_5",
+		OpeningSentence: "Bonjour, c'est Léa. Je peux vous aider à planifier une discussion avec notre équipe, quel jour vous arrangerait ?",
 	}
 )
 
@@ -228,8 +230,30 @@ func (s *Session) run(ctx context.Context) {
 		}
 	}()
 
-	// Snapshot prompt at session start so mid-call edits don't affect this leg.
-	history := llm.NewHistory(GetSystemPrompt())
+	// Snapshot settings at session start.
+	currentSettings := GetSettings()
+	history := llm.NewHistory(currentSettings.Prompt)
+
+	// If an opening sentence is configured, speak it immediately.
+	if currentSettings.OpeningSentence != "" {
+		s.log.Info("session: sending opening sentence", "text", currentSettings.OpeningSentence)
+		
+		history.Append(openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: currentSettings.OpeningSentence,
+		})
+		s.calls.AppendTurn(s.ID, "assistant", currentSettings.OpeningSentence)
+		
+		chunkID := s.hub.NextChunkID()
+		s.hub.BroadcastFinal(chunkID, currentSettings.OpeningSentence)
+		
+		sentenceCh := make(chan string, 1)
+		sentenceCh <- currentSettings.OpeningSentence
+		close(sentenceCh)
+		
+		// Priority 1 TTS for the opening sentence.
+		go s.runTTSTurn(ctx, sentenceCh, chunkID, time.Now())
+	}
 
 	for {
 		select {

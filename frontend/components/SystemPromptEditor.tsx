@@ -9,6 +9,7 @@ export default function SystemPromptEditor() {
   const [voiceProvider, setVoiceProvider] = useState('elevenlabs');
   const [voiceId, setVoiceId] = useState('');
   const [voiceModel, setVoiceModel] = useState('');
+  const [openingSentence, setOpeningSentence] = useState('');
   const [save, setSave]       = useState<SaveState>('idle');
   const [loading, setLoading] = useState(true);
 
@@ -20,6 +21,7 @@ export default function SystemPromptEditor() {
         setVoiceProvider(d.voice_provider ?? 'elevenlabs');
         setVoiceId(d.voice_id ?? '3C1zYzXNXNzrB66ON8rj');
         setVoiceModel(d.voice_model ?? 'eleven_flash_v2_5');
+        setOpeningSentence(d.opening_sentence ?? '');
         setLoading(false); 
       })
       .catch(() => setLoading(false));
@@ -35,7 +37,8 @@ export default function SystemPromptEditor() {
           prompt,
           voice_provider: voiceProvider,
           voice_id: voiceId,
-          voice_model: voiceModel
+          voice_model: voiceModel,
+          opening_sentence: openingSentence
         }),
       });
       setSave(res.ok ? 'saved' : 'error');
@@ -98,12 +101,23 @@ export default function SystemPromptEditor() {
       </div>
 
       <div>
+        <label className="block text-[12px] font-semibold text-on-surface mb-1">Opening Sentence (Assistant starts the call)</label>
+        <textarea
+          value={loading ? 'Loading…' : openingSentence}
+          disabled={loading}
+          onChange={e => setOpeningSentence(e.target.value)}
+          rows={2}
+          className="w-full bg-white border border-slate-200 rounded-lg text-on-surface text-[14px] leading-relaxed px-3 py-2 focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors font-sans disabled:opacity-60"
+        />
+      </div>
+
+      <div>
         <label className="block text-[12px] font-semibold text-on-surface mb-1">System Prompt</label>
         <textarea
           value={loading ? 'Loading…' : prompt}
           disabled={loading}
           onChange={e => setPrompt(e.target.value)}
-          rows={8}
+          rows={6}
           className="w-full bg-white border border-slate-200 rounded-lg text-on-surface text-[14px] leading-relaxed px-3 py-2.5 resize-y focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors font-sans disabled:opacity-60"
         />
       </div>
