@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -211,23 +212,29 @@ func (c *Client) Stream(
 
 		// Emit interim.
 		if interimText != "" {
-			r := Result{Text: finalTextBuf + interimText, IsFinal: false}
-			select {
-			case interimCh <- r:
-			case <-ctx.Done():
-				<-senderDone
-				return ctx.Err()
+			text := strings.TrimSpace(strings.ReplaceAll(finalTextBuf+interimText, "<end>", ""))
+			if text != "" {
+				r := Result{Text: text, IsFinal: false}
+				select {
+				case interimCh <- r:
+				case <-ctx.Done():
+					<-senderDone
+					return ctx.Err()
+				}
 			}
 		}
 
 		// Emit final when all tokens in this response are final.
 		if allFinal && finalTextBuf != "" {
-			r := Result{Text: finalTextBuf, IsFinal: true}
-			select {
-			case finalCh <- r:
-			case <-ctx.Done():
-				<-senderDone
-				return ctx.Err()
+			text := strings.TrimSpace(strings.ReplaceAll(finalTextBuf, "<end>", ""))
+			if text != "" {
+				r := Result{Text: text, IsFinal: true}
+				select {
+				case finalCh <- r:
+				case <-ctx.Done():
+					<-senderDone
+					return ctx.Err()
+				}
 			}
 			// Reset for next utterance after endpoint detection.
 			finalTextBuf = ""

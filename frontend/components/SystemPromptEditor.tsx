@@ -5,9 +5,9 @@ import { useState, useEffect } from 'react';
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 export default function SystemPromptEditor() {
-  const [prompt, setPrompt]     = useState('');
-  const [save, setSave]         = useState<SaveState>('idle');
-  const [loading, setLoading]   = useState(true);
+  const [prompt, setPrompt]   = useState('');
+  const [save, setSave]       = useState<SaveState>('idle');
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetch('/api/system-prompt')
@@ -31,70 +31,35 @@ export default function SystemPromptEditor() {
     setTimeout(() => setSave('idle'), 2500);
   };
 
-  const saveLabel: Record<SaveState, string> = {
-    idle:   'Enregistrer',
-    saving: 'Enregistrement…',
-    saved:  'Enregistré',
-    error:  'Erreur',
+  const btnClass: Record<SaveState, string> = {
+    idle:   'bg-primary text-on-primary hover:bg-primary-container',
+    saving: 'bg-slate-300 text-slate-500 cursor-not-allowed',
+    saved:  'bg-secondary text-on-secondary',
+    error:  'bg-error text-on-error',
   };
-
-  const saveColor: Record<SaveState, string> = {
-    idle:   'var(--accent)',
-    saving: 'var(--text-secondary)',
-    saved:  'var(--success)',
-    error:  'var(--danger)',
+  const btnLabel: Record<SaveState, string> = {
+    idle: 'Save', saving: 'Saving…', saved: 'Saved', error: 'Error',
   };
 
   return (
-    <div style={{ width: '100%' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.6rem' }}>
-        <p style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-secondary)' }}>
-          System Prompt
-        </p>
-        <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
-          Prend effet sur le prochain appel
-        </span>
+    <div className="w-full">
+      <div className="flex justify-between items-baseline mb-2">
+        <span className="text-[11px] text-on-surface-variant">Takes effect on the next call</span>
       </div>
-
       <textarea
-        value={loading ? 'Chargement…' : prompt}
+        value={loading ? 'Loading…' : prompt}
         disabled={loading}
         onChange={e => setPrompt(e.target.value)}
         rows={4}
-        style={{
-          width: '100%',
-          background: 'var(--bg)',
-          border: '1px solid var(--border)',
-          borderRadius: '8px',
-          color: 'var(--text-primary)',
-          padding: '0.75rem',
-          fontSize: '0.9rem',
-          lineHeight: 1.6,
-          resize: 'vertical',
-          fontFamily: 'inherit',
-          outline: 'none',
-          transition: 'border-color 0.15s ease',
-        }}
-        onFocus={e => (e.currentTarget.style.borderColor = 'var(--accent)')}
-        onBlur={e  => (e.currentTarget.style.borderColor = 'var(--border)')}
+        className="w-full bg-white border border-slate-200 rounded-lg text-on-surface text-[14px] leading-relaxed px-3 py-2.5 resize-y focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors font-sans disabled:opacity-60"
       />
-
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+      <div className="flex justify-end mt-2">
         <button
           onClick={handleSave}
           disabled={save === 'saving' || loading}
-          style={{
-            background: saveColor[save],
-            color: '#fff',
-            padding: '0.4rem 1.1rem',
-            borderRadius: '6px',
-            fontSize: '0.85rem',
-            fontWeight: 600,
-            opacity: save === 'saving' ? 0.7 : 1,
-            transition: 'background 0.2s ease',
-          }}
+          className={`px-4 py-1.5 rounded-lg text-[13px] font-semibold transition-colors ${btnClass[save]}`}
         >
-          {saveLabel[save]}
+          {btnLabel[save]}
         </button>
       </div>
     </div>
