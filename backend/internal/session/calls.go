@@ -12,9 +12,11 @@ import (
 
 // TurnEntry is one user or assistant turn in a call transcript.
 type TurnEntry struct {
-	Role string `json:"role"` // "user" | "assistant"
-	Text string `json:"text"`
-	Ts   int64  `json:"ts"` // unix millis
+	Role         string `json:"role"` // "user" | "assistant"
+	Text         string `json:"text"`
+	Ts           int64  `json:"ts"` // unix millis
+	AudioStartMs int64  `json:"audio_start_ms"`
+	TTSLatency   *int64 `json:"tts_latency,omitempty"`
 }
 
 // CallRecord holds metadata and transcript for a single call session.
@@ -30,7 +32,7 @@ type CallRecord struct {
 // CallStorer is implemented by both the in-memory store and the Postgres store.
 type CallStorer interface {
 	Start(id, source string)
-	AppendTurn(id, role, text string)
+	AppendTurn(id string, entry TurnEntry)
 	End(id string)
 	List() []CallRecord
 	Get(id string) (CallRecord, bool)
@@ -67,8 +69,8 @@ func (s *CallStore) Start(id, source string) {
 	s.index[id] = r
 }
 
-func (s *CallStore) AppendTurn(id, role, text string) {
-	if text == "" {
+func (s *CallStore) AppendTurn(id string, entry TurnEntry) {
+	if entry.Text == "" {
 		return
 	}
 	s.mu.Lock()
@@ -77,7 +79,10 @@ func (s *CallStore) AppendTurn(id, role, text string) {
 	if !ok {
 		return
 	}
-	r.Transcript = append(r.Transcript, TurnEntry{Role: role, Text: text, Ts: time.Now().UnixMilli()})
+	if entry.Ts == 0 {
+		entry.Ts = time.Now().UnixMilli()
+	}
+	r.Transcript = append(r.Transcript, entry)
 }
 
 func (s *CallStore) End(id string) {
@@ -162,12 +167,15 @@ func (s *PGCallStore) Start(id, source string) {
 	)
 }
 
-func (s *PGCallStore) AppendTurn(id, role, text string) {
-	if text == "" {
+func (s *PGCallStore) AppendTurn(id string, entry TurnEntry) {
+	if entry.Text == "" {
 		return
 	}
-	entry := []TurnEntry{{Role: role, Text: text, Ts: time.Now().UnixMilli()}}
-	raw, _ := json.Marshal(entry)
+	if entry.Ts == 0 {
+		entry.Ts = time.Now().UnixMilli()
+	}
+	arr := []TurnEntry{entry}
+	raw, _ := json.Marshal(arr)
 	ctx := context.Background()
 	_, _ = s.pool.Exec(ctx,
 		`UPDATE calls SET transcript = transcript || $2::jsonb WHERE id = $1`,
@@ -221,8 +229,8 @@ func scanRows(rows interface {
 	var out []CallRecord
 	for rows.Next() {
 		var (
-			r        CallRecord
-			rawJSON  []byte
+			r       CallRecord
+			rawJSON []byte
 		)
 		if err := rows.Scan(&r.ID, &r.Source, &r.Status, &r.StartedAt, &r.EndedAt, &rawJSON); err != nil {
 			continue

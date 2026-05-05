@@ -10,6 +10,7 @@ const nextConfig = {
       { source: '/browser/:path*',       destination: `${backendURL}/browser/:path*` },
       { source: '/events',               destination: `${backendURL}/events` },
       { source: '/api/:path*',           destination: `${backendURL}/api/:path*` },
+      { source: '/recordings/:path*',    destination: `${backendURL}/recordings/:path*` },
     ];
   },
 };

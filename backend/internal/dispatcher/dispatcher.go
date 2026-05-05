@@ -10,7 +10,7 @@ import (
 
 // AudioSource represents a named, cancellable audio stream.
 type AudioSource struct {
-	Audio  <-chan []byte
+	Audio   <-chan []byte
 	ChunkID string
 }
 
@@ -28,9 +28,9 @@ type AudioDispatcher struct {
 	hub       EventBroadcaster
 
 	// Input signals — written by external goroutines.
-	BargeinCh     chan struct{}   // buffered 1; signal only
-	ToolResultCh  chan AudioSource // buffered 4
-	FillerCh      chan AudioSource // buffered 4
+	BargeinCh    chan struct{}    // buffered 1; signal only
+	ToolResultCh chan AudioSource // buffered 4
+	FillerCh     chan AudioSource // buffered 4
 
 	cancelMu      sync.Mutex
 	currentCancel context.CancelFunc
@@ -40,10 +40,10 @@ type AudioDispatcher struct {
 }
 
 // EventBroadcaster allows the dispatcher to emit UI events without importing
-// the events package (breaks circular imports).
+// the events package (breaks circular imports). Only cancellation is needed
+// here; playing events are broadcast by the session with actual text.
 type EventBroadcaster interface {
 	BroadcastCancelled(chunkID string)
-	BroadcastPlaying(chunkID, text string)
 }
 
 func New(t transport.AudioTransport, hub EventBroadcaster, log *slog.Logger) *AudioDispatcher {
@@ -115,6 +115,7 @@ func (d *AudioDispatcher) SignalBargein() {
 }
 
 // play cancels the current stream, then starts a new one for the given source.
+// Playing events with actual text are broadcast by the session layer, not here.
 func (d *AudioDispatcher) play(ctx context.Context, src AudioSource) {
 	d.cancelCurrent()
 
@@ -123,10 +124,6 @@ func (d *AudioDispatcher) play(ctx context.Context, src AudioSource) {
 	d.currentCancel = cancel
 	d.currentChunk = src.ChunkID
 	d.cancelMu.Unlock()
-
-	if d.hub != nil {
-		d.hub.BroadcastPlaying(src.ChunkID, "")
-	}
 
 	go func() {
 		defer func() {

@@ -109,6 +109,7 @@ type Session struct {
 	tts        tts.Client
 	hub        *events.Hub
 	calls      CallStorer
+	recorder   *Recorder
 	log        *slog.Logger
 }
 
@@ -117,17 +118,18 @@ func (s *Session) Done() <-chan struct{} { return s.done }
 
 // Config carries the per-session API credentials and transport options.
 type Config struct {
-	SonioxAPIKey    string
-	SonioxWSURL     string
-	GroqAPIKey      string
-	GroqModel       string
+	SonioxAPIKey      string
+	SonioxWSURL       string
+	GroqAPIKey        string
+	GroqModel         string
 	ElevenLabsAPIKey  string
 	ElevenLabsVoiceID string
 	ElevenLabsModel   string
 	CartesiaAPIKey    string
 	CartesiaWSURL     string
-	CalendlyAPIKey  string
-	DB              *sql.DB
+	GradiumAPIKey     string
+	CalendlyAPIKey    string
+	DB                *sql.DB
 	// Source is "twilio" or "browser"; determines STT audio format.
 	Source string
 }
@@ -151,13 +153,20 @@ func NewSession(
 	}
 
 	settings := GetSettings()
+	recorder := NewRecorder(cfg.Source)
 
-	sim := tools.NewSimulator(cfg.DB, cfg.CalendlyAPIKey)
+	sim := tools.NewSimulator(cfg.CalendlyAPIKey, hub)
 	groqClient := llm.NewGroqClient(cfg.GroqAPIKey, cfg.GroqModel, sim, llm.DefaultTools(), log)
-	
+
 	var ttsClient tts.Client
 	if settings.VoiceProvider == "cartesia" {
 		ttsClient = tts.NewCartesiaClient(cfg.CartesiaWSURL, cfg.CartesiaAPIKey, settings.VoiceID, log)
+	} else if settings.VoiceProvider == "gradium" {
+		gCfg := tts.GradiumConfig{
+			APIKey: cfg.GradiumAPIKey,
+			VoiceID: settings.VoiceID,
+		}
+		ttsClient = tts.NewGradiumClientFromConfig(gCfg, log)
 	} else {
 		ttsClient = tts.NewElevenLabsClient(cfg.ElevenLabsAPIKey, settings.VoiceID, settings.VoiceModel, log)
 	}
@@ -175,6 +184,7 @@ func NewSession(
 		tts:        ttsClient,
 		hub:        hub,
 		calls:      calls,
+		recorder:   recorder,
 		log:        log,
 	}
 
@@ -195,6 +205,7 @@ func (s *Session) run(ctx context.Context) {
 	defer func() {
 		s.hub.BroadcastSessionEnd(s.ID)
 		s.calls.End(s.ID)
+		s.recorder.Save(s.ID)
 	}()
 	s.log.Info("session started", "session_id", s.ID)
 
@@ -203,6 +214,13 @@ func (s *Session) run(ctx context.Context) {
 		s.log.Error("session: ReadStream failed", "err", err, "session_id", s.ID)
 		return
 	}
+	var recordCh <-chan []byte
+	audioCh, recordCh = teeAudio(ctx, audioCh)
+	go func() {
+		for chunk := range recordCh {
+			s.recorder.WriteUser(chunk)
+		}
+	}()
 
 	go s.dispatcher.Run(ctx)
 
@@ -237,22 +255,22 @@ func (s *Session) run(ctx context.Context) {
 	// If an opening sentence is configured, speak it immediately.
 	if currentSettings.OpeningSentence != "" {
 		s.log.Info("session: sending opening sentence", "text", currentSettings.OpeningSentence)
-		
+
 		history.Append(openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
 			Content: currentSettings.OpeningSentence,
 		})
-		s.calls.AppendTurn(s.ID, "assistant", currentSettings.OpeningSentence)
-		
+		s.calls.AppendTurn(s.ID, TurnEntry{Role: "assistant", Text: currentSettings.OpeningSentence, AudioStartMs: s.recorder.OffsetMs()})
+
 		chunkID := s.hub.NextChunkID()
-		s.hub.BroadcastFinal(chunkID, currentSettings.OpeningSentence)
-		
+		s.hub.BroadcastFinal(chunkID, currentSettings.OpeningSentence, "assistant")
+
 		sentenceCh := make(chan string, 1)
 		sentenceCh <- currentSettings.OpeningSentence
 		close(sentenceCh)
-		
+
 		// Priority 1 TTS for the opening sentence.
-		go s.runTTSTurn(ctx, sentenceCh, chunkID, time.Now())
+		go s.runTTSTurn(ctx, sentenceCh, chunkID, time.Now(), nil)
 	}
 
 	for {
@@ -273,32 +291,49 @@ func (s *Session) run(ctx context.Context) {
 				Role:    openai.ChatMessageRoleUser,
 				Content: result.Text,
 			})
-			s.hub.BroadcastFinal(s.hub.NextChunkID(), result.Text)
-			s.calls.AppendTurn(s.ID, "user", result.Text)
+			s.hub.BroadcastFinal(s.hub.NextChunkID(), result.Text, "user")
+			s.calls.AppendTurn(s.ID, TurnEntry{Role: "user", Text: result.Text, AudioStartMs: s.recorder.OffsetMs()})
 
 			// sentenceCh carries text from the LLM to the TTS pipeline.
 			sentenceCh := make(chan string, 4)
+			rawCh := make(chan string, 16)
 			chunkID := s.hub.NextChunkID()
 
+			var ttfaMs int64
+			startIdx := len(history.Snapshot())
+
 			// TTS goroutine: consume sentenceCh → Cartesia → dispatcher.
-			go s.runTTSTurn(ctx, sentenceCh, chunkID, tSTTFinal)
+			go s.runTTSTurn(ctx, sentenceCh, chunkID, tSTTFinal, &ttfaMs)
 
 			// Filler audio (priority 2) dispatched immediately while LLM thinks.
 			go s.playFiller(ctx, chunkID+"-filler")
 
-			// LLM stream — sends sentences to sentenceCh; blocks until done.
+			// Intercept stream to broadcast tokens immediately
+			go func() {
+				defer close(sentenceCh)
+				for text := range rawCh {
+					sentenceCh <- text
+					s.hub.BroadcastFinal(chunkID, text, "assistant") // Progressive broadcast
+				}
+			}()
+
+			// LLM stream — sends sentences to rawCh; blocks until done.
 			tLLMStart := time.Now()
-			if err := s.llm.StreamLoop(ctx, history, sentenceCh); err != nil && ctx.Err() == nil {
+			if err := s.llm.StreamLoop(ctx, history, rawCh); err != nil && ctx.Err() == nil {
 				s.log.Error("session: LLM error", "err", err, "session_id", s.ID)
 			}
+			close(rawCh)
+
+			// Wait a bit to let TTS update ttfaMs if very fast
+			time.Sleep(10 * time.Millisecond)
+
 			s.log.Info("session: LLM turn complete",
 				"llm_duration_ms", time.Since(tLLMStart).Milliseconds(),
 				"session_id", s.ID,
 			)
-			close(sentenceCh)
 
 			// Record the assistant turn from the last history entry.
-			s.recordAssistantTurn(history)
+			s.recordAssistantTurn(history, chunkID, startIdx, ttfaMs)
 
 		case <-ctx.Done():
 			return
@@ -308,12 +343,17 @@ func (s *Session) run(ctx context.Context) {
 
 // recordAssistantTurn reads the most recent assistant message from history
 // and appends it to the call transcript.
-func (s *Session) recordAssistantTurn(history *llm.History) {
+func (s *Session) recordAssistantTurn(history *llm.History, chunkID string, startIdx int, ttfaMs int64) {
 	msgs := history.Snapshot()
-	for i := len(msgs) - 1; i >= 0; i-- {
+	for i := len(msgs) - 1; i >= startIdx; i-- {
 		m := msgs[i]
 		if m.Role == openai.ChatMessageRoleAssistant && m.Content != "" {
-			s.calls.AppendTurn(s.ID, "assistant", m.Content)
+			var lat *int64
+			if ttfaMs != 0 {
+				latMs := ttfaMs
+				lat = &latMs
+			}
+			s.calls.AppendTurn(s.ID, TurnEntry{Role: "assistant", Text: m.Content, AudioStartMs: s.recorder.OffsetMs(), TTSLatency: lat})
 			return
 		}
 	}
@@ -321,7 +361,7 @@ func (s *Session) recordAssistantTurn(history *llm.History) {
 
 // runTTSTurn connects to Cartesia, streams the sentence channel, and forwards
 // the resulting audio to the dispatcher at tool-result priority (priority 1).
-func (s *Session) runTTSTurn(ctx context.Context, sentenceCh <-chan string, chunkID string, tSTTFinal time.Time) {
+func (s *Session) runTTSTurn(ctx context.Context, sentenceCh <-chan string, chunkID string, tSTTFinal time.Time, ttfaMs *int64) {
 	tTTSDial := time.Now()
 	audioCh, err := s.tts.Stream(ctx, sentenceCh)
 	if err != nil {
@@ -329,6 +369,19 @@ func (s *Session) runTTSTurn(ctx context.Context, sentenceCh <-chan string, chun
 		return
 	}
 	tTTSConnected := time.Now()
+	ms := tTTSConnected.Sub(tSTTFinal).Milliseconds()
+	if ttfaMs != nil {
+		*ttfaMs = ms
+	}
+
+	var recordCh <-chan []byte
+	audioCh, recordCh = teeAudio(ctx, audioCh)
+	go func() {
+		for chunk := range recordCh {
+			s.recorder.WriteAssistant(chunk)
+		}
+	}()
+
 	s.log.Info("session: TTS connected",
 		"chunk_id", chunkID,
 		"tts_dial_ms", tTTSConnected.Sub(tTTSDial).Milliseconds(),

@@ -1,0 +1,158 @@
+--- /Users/tahabaziz/Documents/demo-realtime-agent/frontend/components/CallHistory.tsx
++++ /Users/tahabaziz/Documents/demo-realtime-agent/frontend/components/CallHistory.tsx
+@@ -2,16 +2,18 @@
+ 
+-import { useState, useEffect } from 'react';
++import { useState, useEffect, useRef } from 'react';
+ 
+-interface TurnEntry { role: string; text: string; ts: number; }
++interface TurnEntry { role: string; text: string; ts: number; audio_start_ms: number; tts_latency?: number; }
+ interface CallRecord {
+   id: string;
+   source: string;
+   status: string;
+   started_at: number;
+   ended_at: number | null;
+   transcript: TurnEntry[];
+ }
+ 
+ function formatDuration(startMs: number, endMs: number | null): string {
+   const ms = Math.max(0, (endMs ?? Date.now()) - startMs);
+   const s = Math.floor(ms / 1000);
+   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+ }
+@@ -39,7 +41,56 @@
+ 
+ // ── Transcript modal ──────────────────────────────────────────────────────────
+ function TranscriptModal({ call, onClose }: { call: CallRecord; onClose: () => void }) {
++  const audioRef = useRef<HTMLAudioElement | null>(null);
++  const [isPlaying, setIsPlaying] = useState(false);
++  const [currentTimeMs, setCurrentTimeMs] = useState(0);
++  const [durationMs, setDurationMs] = useState(0);
++  const [playbackRate, setPlaybackRate] = useState(1);
++
++  useEffect(() => {
++    if (!audioRef.current) return;
++    const a = audioRef.current;
++    const updateTime = () => setCurrentTimeMs(a.currentTime * 1000);
++    const updateDuration = () => {
++      if (isFinite(a.duration)) setDurationMs(a.duration * 1000);
++    };
++    const onPlay = () => setIsPlaying(true);
++    const onPause = () => setIsPlaying(false);
++    
++    a.addEventListener('timeupdate', updateTime);
++    a.addEventListener('loadedmetadata', updateDuration);
++    a.addEventListener('durationchange', updateDuration);
++    a.addEventListener('play', onPlay);
++    a.addEventListener('pause', onPause);
++    
++    return () => {
++      a.removeEventListener('timeupdate', updateTime);
++      a.removeEventListener('loadedmetadata', updateDuration);
++      a.removeEventListener('durationchange', updateDuration);
++      a.removeEventListener('play', onPlay);
++      a.removeEventListener('pause', onPause);
++    };
++  }, []);
++
++  const togglePlay = () => {
++    if (!audioRef.current) return;
++    if (isPlaying) audioRef.current.pause();
++    else audioRef.current.play();
++  };
++
++  const cycleSpeed = () => {
++    if (!audioRef.current) return;
++    const next = playbackRate === 1 ? 1.5 : playbackRate === 1.5 ? 2 : 1;
++    audioRef.current.playbackRate = next;
++    setPlaybackRate(next);
++  };
++
++  const skip = (delta: number) => {
++    if (!audioRef.current) return;
++    audioRef.current.currentTime += delta;
++  };
++
+   return (
+     <div
+       className="fixed inset-0 bg-black/40 z-[80] flex items-center justify-center p-4"
+@@ -62,7 +113,44 @@
+           </button>
+         </div>
++        
++        {call.status === 'done' && (
++          <div className="px-6 py-4 border-b border-outline-variant bg-surface-container-lowest flex items-center justify-between shrink-0">
++            <audio ref={audioRef} src={`http://localhost:8080/recordings/${call.id}.wav`} preload="metadata" />
++            <div className="flex items-center gap-4">
++              <button onClick={togglePlay} className="w-10 h-10 rounded-full bg-primary text-on-primary flex items-center justify-center hover:opacity-90 transition-opacity shadow-sm">
++                <span className="material-symbols-outlined text-[24px]">
++                  {isPlaying ? 'pause' : 'play_arrow'}
++                </span>
++              </button>
++              <button onClick={cycleSpeed} className="text-[13px] font-bold w-10 text-on-surface hover:text-primary transition-colors">
++                {playbackRate}x
++              </button>
++              <div className="flex items-center gap-1">
++                <button onClick={() => skip(-10)} className="p-1.5 rounded-full hover:bg-surface-variant text-on-surface transition-colors" title="Rewind 10s">
++                  <span className="material-symbols-outlined text-[20px]">replay_10</span>
++                </button>
++                <button onClick={() => skip(10)} className="p-1.5 rounded-full hover:bg-surface-variant text-on-surface transition-colors" title="Forward 10s">
++                  <span className="material-symbols-outlined text-[20px]">forward_10</span>
++                </button>
++              </div>
++            </div>
++            
++            <div className="flex items-center gap-3">
++              <div className="h-1.5 bg-surface-variant rounded-full w-48 overflow-hidden relative" onClick={(e) => {
++                if (!audioRef.current || !durationMs) return;
++                const rect = e.currentTarget.getBoundingClientRect();
++                const x = e.clientX - rect.left;
++                audioRef.current.currentTime = (x / rect.width) * (durationMs / 1000);
++              }}>
++                <div className="absolute top-0 left-0 bottom-0 bg-primary pointer-events-none" style={{ width: `${durationMs ? (currentTimeMs / durationMs) * 100 : 0}%` }} />
++              </div>
++              <span className="text-[12px] font-mono text-on-surface-variant">
++                {formatDuration(0, currentTimeMs)} / {formatDuration(0, durationMs)}
++              </span>
++            </div>
++          </div>
++        )}
++
+         <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-3">
+           {call.transcript.length === 0 ? (
+             <p className="text-center text-on-surface-variant text-[14px] py-10">No transcript available yet.</p>
+           ) : (
+             call.transcript.map((turn, i) => {
++              const nextTurn = call.transcript[i + 1];
++              const isActive = isPlaying && currentTimeMs >= (turn.audio_start_ms || 0) && (!nextTurn || currentTimeMs < (nextTurn.audio_start_ms || Infinity));
++              const activeBorder = isActive ? 'border-primary shadow-md' : 'border-transparent';
++
+               if (turn.role === 'tool_call' || turn.role === 'tool_result') {
+@@ -84,7 +172,7 @@
+                 return (
+                   <div key={i} className="flex justify-center my-1">
+-                    <div style={{ background: bg, border: `1px solid ${border}` }} className="w-full max-w-[85%] rounded-lg p-3">
++                    <div style={{ background: bg }} className={`w-full max-w-[85%] rounded-lg p-3 border-2 transition-all ${isActive ? 'border-primary shadow-md' : 'border-transparent'}`} style={{ border: isActive ? undefined : `1px solid ${border}` }}>
+                       <div className="flex items-center gap-2 mb-2">
+                         <span className="material-symbols-outlined" style={{ fontSize: 15, color: accent }}>api</span>
+@@ -104,8 +192,8 @@
+               return (
+                 <div key={i} className={`flex ${turn.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+-                  <div className={`max-w-[75%] rounded-xl px-4 py-2.5 ${turn.role === 'user' ? 'bg-primary text-on-primary' : 'bg-surface-container text-on-surface'
+-                    }`}>
++                  <div className={`max-w-[75%] rounded-xl px-4 py-2.5 border-2 transition-all ${activeBorder} ${turn.role === 'user' ? 'bg-primary text-on-primary' : 'bg-surface-container text-on-surface'}`}>
+                     <p className="text-[14px] leading-relaxed">{turn.text}</p>
+-                    <p className={`text-[11px] mt-1 ${turn.role === 'user' ? 'opacity-70' : 'text-on-surface-variant'}`}>
++                    <div className="flex items-center gap-2 mt-1">
++                      <p className={`text-[11px] ${turn.role === 'user' ? 'opacity-70' : 'text-on-surface-variant'}`}>
+                         {new Date(turn.ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                       </p>
++                      {turn.tts_latency != null && (
++                        <span className="inline-flex items-center gap-1 bg-surface text-on-surface px-1.5 py-[1px] rounded text-[10px] font-bold border border-outline-variant shadow-sm">
++                          TTS {turn.tts_latency}ms
++                        </span>
++                      )}
++                    </div>
+                   </div>
+                 </div>

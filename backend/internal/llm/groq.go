@@ -22,8 +22,8 @@ const (
 type streamMode int
 
 const (
-	modeText            streamMode = iota
-	modeToolAccumulate             // accumulating tool_call JSON fragments
+	modeText           streamMode = iota
+	modeToolAccumulate            // accumulating tool_call JSON fragments
 )
 
 // ToolSimulator is called when the LLM requests a tool. Returns the tool result
@@ -286,10 +286,24 @@ func DefaultTools() []openai.Tool {
 			Type: openai.ToolTypeFunction,
 			Function: &openai.FunctionDefinition{
 				Name:        "book_meeting",
-				Description: "Books a meeting in the calendar.",
+				Description: "Books a meeting slot in the calendar. Call this only after the user has confirmed both the datetime AND their name and email.",
 				Parameters: map[string]any{
 					"type": "object",
-					"properties": map[string]any{},
+					"properties": map[string]any{
+						"datetime": map[string]any{
+							"type":        "string",
+							"description": "ISO 8601 datetime of the slot to book, e.g. 2026-05-08T14:30:00. Must be one of the slots returned by check_availability.",
+						},
+						"name": map[string]any{
+							"type":        "string",
+							"description": "Full name of the person to book the meeting for.",
+						},
+						"email": map[string]any{
+							"type":        "string",
+							"description": "Email address of the person to book the meeting for.",
+						},
+					},
+					"required": []string{"datetime", "name", "email"},
 				},
 			},
 		},

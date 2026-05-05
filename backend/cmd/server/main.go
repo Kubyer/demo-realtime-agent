@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	_ "github.com/lib/pq"
 	"io"
 	"log/slog"
-	_ "github.com/lib/pq"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,6 +21,7 @@ import (
 	"github.com/demo-realtime-agent/voiceagent/config"
 	"github.com/demo-realtime-agent/voiceagent/internal/events"
 	"github.com/demo-realtime-agent/voiceagent/internal/session"
+	"github.com/demo-realtime-agent/voiceagent/internal/tools"
 	"github.com/demo-realtime-agent/voiceagent/internal/transport"
 )
 
@@ -39,6 +40,145 @@ func corsMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// fetchCalendlyEvents returns the scheduled events for the ISO week that
+// contains dateStr (YYYY-MM-DD). Merges real Calendly events with mock demo
+// data so the calendar always looks populated during a demo.
+func fetchCalendlyEvents(apiKey, dateStr string) []tools.CalendlyEvent {
+	ref, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		ref = time.Now()
+	}
+	// Compute Monday of the same week.
+	wd := int(ref.Weekday())
+	if wd == 0 {
+		wd = 7
+	}
+	monday := ref.AddDate(0, 0, -(wd - 1))
+	sunday := monday.AddDate(0, 0, 6)
+
+	minTime := monday.Format("2006-01-02") + "T00:00:00.000000Z"
+	maxTime := sunday.Format("2006-01-02") + "T23:59:59.000000Z"
+
+	mock := mockCalendlyEvents(monday)
+
+	tools.MockBookingsMu.RLock()
+	mock = append(mock, tools.MockBookings...)
+	tools.MockBookingsMu.RUnlock()
+
+	if apiKey != "" {
+		real, err := fetchFromCalendly(apiKey, minTime, maxTime)
+		if err == nil && len(real) > 0 {
+			// Real events take precedence; still append mock ones for a full demo feel.
+			return append(real, mock...)
+		}
+	}
+	return mock
+}
+
+func fetchFromCalendly(apiKey, minTime, maxTime string) ([]tools.CalendlyEvent, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// First: get user URI.
+	req, _ := http.NewRequestWithContext(ctx, "GET", "https://api.calendly.com/users/me", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("calendly /users/me: %d", resp.StatusCode)
+	}
+	var me struct {
+		Resource struct {
+			URI string `json:"uri"`
+		} `json:"resource"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&me); err != nil {
+		return nil, err
+	}
+	userURI := me.Resource.URI
+	if userURI == "" {
+		return nil, fmt.Errorf("empty user URI")
+	}
+
+	// Then: fetch scheduled events.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	url := fmt.Sprintf(
+		"https://api.calendly.com/scheduled_events?user=%s&min_start_time=%s&max_start_time=%s&status=active&count=100",
+		userURI, minTime, maxTime,
+	)
+	req2, _ := http.NewRequestWithContext(ctx2, "GET", url, nil)
+	req2.Header.Set("Authorization", "Bearer "+apiKey)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		return nil, err
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != 200 {
+		return nil, fmt.Errorf("calendly /scheduled_events: %d", resp2.StatusCode)
+	}
+	var result struct {
+		Collection []struct {
+			URI       string `json:"uri"`
+			Name      string `json:"name"`
+			StartTime string `json:"start_time"`
+			EndTime   string `json:"end_time"`
+			Status    string `json:"status"`
+		} `json:"collection"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	out := make([]tools.CalendlyEvent, 0, len(result.Collection))
+	for _, e := range result.Collection {
+		// Use last path segment of URI as ID.
+		parts := strings.Split(e.URI, "/")
+		id := parts[len(parts)-1]
+		out = append(out, tools.CalendlyEvent{
+			ID:        id,
+			Name:      e.Name,
+			StartTime: e.StartTime,
+			EndTime:   e.EndTime,
+			Status:    e.Status,
+		})
+	}
+	return out, nil
+}
+
+// mockCalendlyEvents returns realistic mock events for the week starting monday.
+func mockCalendlyEvents(monday time.Time) []tools.CalendlyEvent {
+	type slot struct {
+		day, startH, startM, endH, endM int
+		name                            string
+	}
+	slots := []slot{
+		{0, 9, 0, 9, 30, "Démo Legalplace – Marie Dupont"},
+		{0, 14, 0, 14, 30, "Appel découverte – Jean Martin"},
+		{1, 10, 30, 11, 0, "Suivi contrat – Sophie Bernard"},
+		{2, 9, 0, 9, 30, "Démo Legalplace – Paul Leroy"},
+		{2, 15, 0, 15, 30, "Appel découverte – Claire Moreau"},
+		{3, 11, 0, 11, 30, "Suivi dossier – Thomas Petit"},
+		{4, 10, 0, 10, 30, "Démo Legalplace – Emma Blanc"},
+	}
+	out := make([]tools.CalendlyEvent, 0, len(slots))
+	for i, s := range slots {
+		day := monday.AddDate(0, 0, s.day)
+		start := time.Date(day.Year(), day.Month(), day.Day(), s.startH, s.startM, 0, 0, time.UTC)
+		end := time.Date(day.Year(), day.Month(), day.Day(), s.endH, s.endM, 0, 0, time.UTC)
+		out = append(out, tools.CalendlyEvent{
+			ID:        fmt.Sprintf("mock-%d", i+1),
+			Name:      s.name,
+			StartTime: start.Format(time.RFC3339),
+			EndTime:   end.Format(time.RFC3339),
+			Status:    "active",
+		})
+	}
+	return out
 }
 
 func main() {
@@ -81,17 +221,18 @@ func main() {
 	}
 
 	sessCfg := session.Config{
-		SonioxAPIKey:    cfg.SonioxAPIKey,
-		SonioxWSURL:     cfg.SonioxWSURL,
-		GroqAPIKey:      cfg.GroqAPIKey,
-		GroqModel:       cfg.GroqModel,
+		SonioxAPIKey:      cfg.SonioxAPIKey,
+		SonioxWSURL:       cfg.SonioxWSURL,
+		GroqAPIKey:        cfg.GroqAPIKey,
+		GroqModel:         cfg.GroqModel,
 		ElevenLabsAPIKey:  cfg.ElevenLabsAPIKey,
 		ElevenLabsVoiceID: cfg.ElevenLabsVoiceID,
 		ElevenLabsModel:   cfg.ElevenLabsModel,
 		CartesiaAPIKey:    cfg.CartesiaAPIKey,
 		CartesiaWSURL:     cfg.CartesiaWSURL,
-		CalendlyAPIKey:  cfg.CalendlyAPIKey,
-		DB:              dbConn,
+		GradiumAPIKey:     cfg.GradiumAPIKey,
+		CalendlyAPIKey:    cfg.CalendlyAPIKey,
+		DB:                dbConn,
 	}
 	manager := session.NewManager(sessCfg, hub, calls, log)
 
@@ -193,7 +334,6 @@ func main() {
 				http.Error(w, "invalid body", http.StatusBadRequest)
 				return
 			}
-			// Fallbacks if not provided
 			if req.VoiceProvider == "" {
 				req.VoiceProvider = "elevenlabs"
 			}
@@ -208,6 +348,17 @@ func main() {
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
+	})))
+
+	// /api/calendly/events — GET returns scheduled events for a given week.
+	mux.Handle("/api/calendly/events", corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		date := r.URL.Query().Get("date")
+		if date == "" {
+			date = time.Now().Format("2006-01-02")
+		}
+		evts := fetchCalendlyEvents(cfg.CalendlyAPIKey, date)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(evts) //nolint:errcheck
 	})))
 
 	// /api/calls — GET returns all call records (newest first).
@@ -234,6 +385,9 @@ func main() {
 	})))
 
 	// /health — liveness probe.
+	// Serve recordings statically
+	mux.Handle("/recordings/", corsMiddleware(http.StripPrefix("/recordings/", http.FileServer(http.Dir("recordings")))))
+
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok","sessions":` + strconv.Itoa(manager.ActiveCount()) + `}`)) //nolint:errcheck

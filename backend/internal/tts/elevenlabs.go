@@ -10,9 +10,28 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// ElevenLabsConfig groups all configurable parameters for the ElevenLabs TTS client.
+type ElevenLabsConfig struct {
+	APIKey          string
+	VoiceID         string
+	Model           string
+	Stability       *float64 // 0–1, nil = provider default (0.5)
+	SimilarityBoost *float64 // 0–1, nil = provider default (0.75)
+	Style           *float64 // 0–1, nil = provider default (0.0)
+	Speed           *float64 // 0.7–1.2, nil = provider default (1.0)
+}
+
 type elevenLabsRequest struct {
-	Text                 string `json:"text"`
-	TryTriggerGeneration bool   `json:"try_trigger_generation,omitempty"`
+	Text                 string               `json:"text"`
+	VoiceSettings        *elevenLabsVoiceConf `json:"voice_settings,omitempty"`
+	TryTriggerGeneration bool                 `json:"try_trigger_generation,omitempty"`
+}
+
+type elevenLabsVoiceConf struct {
+	Stability       float64 `json:"stability"`
+	SimilarityBoost float64 `json:"similarity_boost"`
+	Style           float64 `json:"style"`
+	Speed           float64 `json:"speed"`
 }
 
 type elevenLabsResponse struct {
@@ -21,21 +40,53 @@ type elevenLabsResponse struct {
 }
 
 type ElevenLabsClient struct {
-	apiKey  string
-	voiceID string
-	model   string
-	log     *slog.Logger
+	cfg ElevenLabsConfig
+	log *slog.Logger
 }
 
+// NewElevenLabsClient creates a client with the minimal required parameters.
 func NewElevenLabsClient(apiKey, voiceID, model string, log *slog.Logger) *ElevenLabsClient {
-	return &ElevenLabsClient{apiKey: apiKey, voiceID: voiceID, model: model, log: log}
+	return &ElevenLabsClient{cfg: ElevenLabsConfig{APIKey: apiKey, VoiceID: voiceID, Model: model}, log: log}
+}
+
+// NewElevenLabsClientFromConfig creates a client from a full config struct.
+func NewElevenLabsClientFromConfig(cfg ElevenLabsConfig, log *slog.Logger) *ElevenLabsClient {
+	return &ElevenLabsClient{cfg: cfg, log: log}
+}
+
+func (c *ElevenLabsClient) voiceConf() *elevenLabsVoiceConf {
+	if c.cfg.Stability == nil && c.cfg.SimilarityBoost == nil && c.cfg.Style == nil && c.cfg.Speed == nil {
+		return nil
+	}
+	vc := &elevenLabsVoiceConf{
+		Stability:       0.5,
+		SimilarityBoost: 0.75,
+		Style:           0.0,
+		Speed:           1.0,
+	}
+	if c.cfg.Stability != nil {
+		vc.Stability = *c.cfg.Stability
+	}
+	if c.cfg.SimilarityBoost != nil {
+		vc.SimilarityBoost = *c.cfg.SimilarityBoost
+	}
+	if c.cfg.Style != nil {
+		vc.Style = *c.cfg.Style
+	}
+	if c.cfg.Speed != nil {
+		vc.Speed = *c.cfg.Speed
+	}
+	return vc
 }
 
 func (c *ElevenLabsClient) Stream(ctx context.Context, sentenceCh <-chan string) (<-chan []byte, error) {
-	wsURL := fmt.Sprintf("wss://api.elevenlabs.io/v1/text-to-speech/%s/stream-input?model_id=%s&output_format=ulaw_8000", c.voiceID, c.model)
-	
+	wsURL := fmt.Sprintf(
+		"wss://api.elevenlabs.io/v1/text-to-speech/%s/stream-input?model_id=%s&output_format=ulaw_8000",
+		c.cfg.VoiceID, c.cfg.Model,
+	)
+
 	header := map[string][]string{
-		"xi-api-key": {c.apiKey},
+		"xi-api-key": {c.cfg.APIKey},
 	}
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, header)
 	if err != nil {
@@ -49,24 +100,23 @@ func (c *ElevenLabsClient) Stream(ctx context.Context, sentenceCh <-chan string)
 		// ElevenLabs needs an initial text block to start generation.
 		req := elevenLabsRequest{
 			Text:                 " ",
+			VoiceSettings:        c.voiceConf(),
 			TryTriggerGeneration: true,
 		}
 		data, _ := json.Marshal(req)
-		conn.WriteMessage(websocket.TextMessage, data)
+		conn.WriteMessage(websocket.TextMessage, data) //nolint:errcheck
 
 		for {
 			select {
 			case sentence, ok := <-sentenceCh:
 				if !ok {
-					// Empty text signals the end of input
 					endReq := elevenLabsRequest{Text: ""}
 					data, _ := json.Marshal(endReq)
-					conn.WriteMessage(websocket.TextMessage, data)
+					conn.WriteMessage(websocket.TextMessage, data) //nolint:errcheck
 					return
 				}
-				
-				req := elevenLabsRequest{Text: sentence + " "}
-				data, _ := json.Marshal(req)
+				r := elevenLabsRequest{Text: sentence + " "}
+				data, _ := json.Marshal(r)
 				if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 					c.log.Warn("elevenlabs send", "err", err)
 					return
@@ -91,10 +141,9 @@ func (c *ElevenLabsClient) Stream(ctx context.Context, sentenceCh <-chan string)
 				}
 				return
 			}
-			
+
 			var resp elevenLabsResponse
 			if err := json.Unmarshal(raw, &resp); err != nil {
-				// Handle potential error format from ElevenLabs
 				var errResp map[string]interface{}
 				if json.Unmarshal(raw, &errResp) == nil {
 					if _, hasError := errResp["error"]; hasError {

@@ -22,6 +22,8 @@ type Config struct {
 	CartesiaAPIKey string
 	CartesiaWSURL  string
 
+	GradiumAPIKey string
+
 	DatabaseURL string // optional; falls back to in-memory store when empty
 
 	HTTPPort string
@@ -38,8 +40,8 @@ func Load() (*Config, error) {
 	c := &Config{
 		// SonioxWSURL : Soniox a migré de gRPC à WebSocket (plus de protoc nécessaire)
 		SonioxWSURL: getEnvOrDefault("SONIOX_WS_URL", "wss://stt-rt.eu.soniox.com/transcribe-websocket"),
-		// openai/gpt-oss-20b : ~950 t/s sur LPU Groq — MoE 20B actifs,
-		// meilleur raisonnement juridique + tool calling vs llama-3.1-8b-instant (700 t/s)
+		// openai/gpt-oss-20b : ~1000 t/s on Groq, exceptionally fast,
+		// handles complex tool calling reliably compared to smaller models.
 		GroqModel:       getEnvOrDefault("GROQ_MODEL", "openai/gpt-oss-20b"),
 		ElevenLabsModel: getEnvOrDefault("ELEVENLABS_MODEL", "eleven_flash_v2_5"),
 		CartesiaWSURL:   getEnvOrDefault("CARTESIA_WS_URL", "wss://api.cartesia.ai/tts/websocket"),
@@ -49,6 +51,7 @@ func Load() (*Config, error) {
 
 	c.DatabaseURL = os.Getenv("DATABASE_URL")
 	c.CartesiaAPIKey = os.Getenv("CARTESIA_API_KEY")
+	c.GradiumAPIKey = os.Getenv("GRADIUM_API_KEY")
 
 	c.ElevenLabsVoiceID = getEnvOrDefault("ELEVENLABS_VOICE_ID", "3C1zYzXNXNzrB66ON8rj")
 

@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/demo-realtime-agent/voiceagent/internal/tts"
 	"github.com/demo-realtime-agent/voiceagent/config"
+	"github.com/demo-realtime-agent/voiceagent/internal/tts"
 )
 
 func main() {
@@ -18,7 +18,11 @@ func main() {
 	}
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	client := tts.NewClient(cfg.CartesiaWSURL, cfg.CartesiaAPIKey, cfg.CartesiaVoiceID, log)
+	voiceID := os.Getenv("CARTESIA_VOICE_ID")
+	if voiceID == "" {
+		voiceID = "a0e99841-438c-4a64-b679-ae501e7d6091" // example voice
+	}
+	client := tts.NewCartesiaClient(cfg.CartesiaWSURL, cfg.CartesiaAPIKey, voiceID, log)
 
 	sentenceCh := make(chan string, 4)
 	sentenceCh <- "Bonjour !"

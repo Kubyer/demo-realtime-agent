@@ -13,10 +13,10 @@ import (
 
 // twilioInbound is the JSON envelope Twilio sends for each media frame.
 type twilioInbound struct {
-	Event     string         `json:"event"`
-	StreamSid string         `json:"streamSid"`
-	Media     *twilioMedia   `json:"media,omitempty"`
-	Start     *twilioStart   `json:"start,omitempty"`
+	Event     string       `json:"event"`
+	StreamSid string       `json:"streamSid"`
+	Media     *twilioMedia `json:"media,omitempty"`
+	Start     *twilioStart `json:"start,omitempty"`
 }
 
 type twilioMedia struct {
@@ -30,9 +30,9 @@ type twilioStart struct {
 
 // twilioOutbound is the JSON envelope the server sends back to Twilio.
 type twilioOutbound struct {
-	Event     string       `json:"event"`
-	StreamSid string       `json:"streamSid"`
-	Media     *outMedia    `json:"media,omitempty"`
+	Event     string    `json:"event"`
+	StreamSid string    `json:"streamSid"`
+	Media     *outMedia `json:"media,omitempty"`
 }
 
 type outMedia struct {
