@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 
-interface TurnEntry { role: string; text: string; ts: number; audio_start_ms?: number; tts_latency?: number; }
+interface TurnEntry { role: string; text: string; ts: number; audio_start_ms?: number; tts_latency?: number; ttft_ms?: number; e2e_ms?: number; }
 interface CallRecord {
   id: string;
   source: string;
@@ -202,9 +202,19 @@ function TranscriptModal({ call, onClose }: { call: CallRecord; onClose: () => v
                       <p className={`text-[11px] ${turn.role === 'user' ? 'opacity-70' : 'text-on-surface-variant'}`}>
                         {new Date(turn.ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
                       </p>
+                      {turn.ttft_ms != null && (
+                        <span className="inline-flex items-center gap-1 bg-surface text-on-surface px-1.5 py-[1px] rounded text-[10px] font-bold border border-outline-variant shadow-sm" title="Time to First Token">
+                          TTFT <span className="text-primary">{turn.ttft_ms}ms</span>
+                        </span>
+                      )}
                       {turn.tts_latency != null && (
-                        <span className="inline-flex items-center gap-1 bg-surface text-on-surface px-1.5 py-[1px] rounded text-[10px] font-bold border border-outline-variant shadow-sm">
-                          TTS {turn.tts_latency}ms
+                        <span className="inline-flex items-center gap-1 bg-surface text-on-surface px-1.5 py-[1px] rounded text-[10px] font-bold border border-outline-variant shadow-sm" title="Time to First Audio">
+                          TTFA <span className="text-secondary">{turn.tts_latency}ms</span>
+                        </span>
+                      )}
+                      {turn.e2e_ms != null && (
+                        <span className="inline-flex items-center gap-1 bg-surface text-on-surface px-1.5 py-[1px] rounded text-[10px] font-bold border border-outline-variant shadow-sm" title="End-to-End Latency">
+                          E2E <span className="text-amber-500">{turn.e2e_ms}ms</span>
                         </span>
                       )}
                     </div>

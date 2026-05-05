@@ -17,6 +17,8 @@ type TurnEntry struct {
 	Ts           int64  `json:"ts"` // unix millis
 	AudioStartMs int64  `json:"audio_start_ms"`
 	TTSLatency   *int64 `json:"tts_latency,omitempty"`
+	TTFTMs       *int64 `json:"ttft_ms,omitempty"`
+	E2EMs        *int64 `json:"e2e_ms,omitempty"`
 }
 
 // CallRecord holds metadata and transcript for a single call session.

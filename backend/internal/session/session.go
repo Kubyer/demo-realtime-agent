@@ -3,8 +3,10 @@ package session
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -250,7 +252,15 @@ func (s *Session) run(ctx context.Context) {
 
 	// Snapshot settings at session start.
 	currentSettings := GetSettings()
-	history := llm.NewHistory(currentSettings.Prompt)
+	
+	now := time.Now()
+	days := []string{"dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"}
+	months := []string{"janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"}
+	dateStr := fmt.Sprintf("%s %d %s %d", days[now.Weekday()], now.Day(), months[now.Month()-1], now.Year())
+	timeStr := now.Format("15:04")
+	promptWithDate := currentSettings.Prompt + "\n\n# DATE ET HEURE ACTUELLES\nNous sommes le " + dateStr + " et il est " + timeStr + ". Utilise cette information si l'utilisateur te demande 'On est quel jour' ou parle de dates relatives."
+	
+	history := llm.NewHistory(promptWithDate)
 
 	// If an opening sentence is configured, speak it immediately.
 	if currentSettings.OpeningSentence != "" {
@@ -299,7 +309,8 @@ func (s *Session) run(ctx context.Context) {
 			rawCh := make(chan string, 16)
 			chunkID := s.hub.NextChunkID()
 
-			var ttfaMs int64
+			var ttfaMs atomic.Int64
+			var ttftMs atomic.Int64
 			startIdx := len(history.Snapshot())
 
 			// TTS goroutine: consume sentenceCh → Cartesia → dispatcher.
@@ -311,10 +322,35 @@ func (s *Session) run(ctx context.Context) {
 			// Intercept stream to broadcast tokens immediately
 			go func() {
 				defer close(sentenceCh)
+				var firstToken bool
+				var fullText string
 				for text := range rawCh {
+					if !firstToken {
+						firstToken = true
+						ttftMs.Store(time.Since(tSTTFinal).Milliseconds())
+					}
 					sentenceCh <- text
-					s.hub.BroadcastFinal(chunkID, text, "assistant") // Progressive broadcast
+					fullText += text
+					s.hub.BroadcastPlaying(chunkID, fullText, "assistant") // Progressive broadcast
 				}
+				
+				// Wait a bit for TTS to set TTFA if needed
+				for i := 0; i < 50; i++ {
+					if ttfaMs.Load() != 0 {
+						break
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				finalTtfa := ttfaMs.Load()
+				finalTtft := ttftMs.Load()
+				
+				s.hub.BroadcastMetrics(events.MetricsPayload{
+					TTFTMs: finalTtft,
+					TTFAMs: finalTtfa,
+					E2EMs:  finalTtfa,
+				})
+				
+				s.hub.BroadcastFinal(chunkID, fullText, "assistant")
 			}()
 
 			// LLM stream — sends sentences to rawCh; blocks until done.
@@ -333,7 +369,7 @@ func (s *Session) run(ctx context.Context) {
 			)
 
 			// Record the assistant turn from the last history entry.
-			s.recordAssistantTurn(history, chunkID, startIdx, ttfaMs)
+			s.recordAssistantTurn(history, chunkID, startIdx, &ttfaMs, &ttftMs)
 
 		case <-ctx.Done():
 			return
@@ -343,17 +379,25 @@ func (s *Session) run(ctx context.Context) {
 
 // recordAssistantTurn reads the most recent assistant message from history
 // and appends it to the call transcript.
-func (s *Session) recordAssistantTurn(history *llm.History, chunkID string, startIdx int, ttfaMs int64) {
+func (s *Session) recordAssistantTurn(history *llm.History, chunkID string, startIdx int, ttfaMs *atomic.Int64, ttftMs *atomic.Int64) {
 	msgs := history.Snapshot()
 	for i := len(msgs) - 1; i >= startIdx; i-- {
 		m := msgs[i]
 		if m.Role == openai.ChatMessageRoleAssistant && m.Content != "" {
-			var lat *int64
-			if ttfaMs != 0 {
-				latMs := ttfaMs
-				lat = &latMs
+			var lat, ttft, e2e *int64
+			latVal := ttfaMs.Load()
+			if latVal != 0 {
+				lat = &latVal
+				e2e = &latVal
 			}
-			s.calls.AppendTurn(s.ID, TurnEntry{Role: "assistant", Text: m.Content, AudioStartMs: s.recorder.OffsetMs(), TTSLatency: lat})
+			ttftVal := ttftMs.Load()
+			if ttftVal != 0 {
+				ttft = &ttftVal
+			}
+			s.calls.AppendTurn(s.ID, TurnEntry{
+				Role: "assistant", Text: m.Content, AudioStartMs: s.recorder.OffsetMs(),
+				TTSLatency: lat, TTFTMs: ttft, E2EMs: e2e,
+			})
 			return
 		}
 	}
@@ -361,7 +405,7 @@ func (s *Session) recordAssistantTurn(history *llm.History, chunkID string, star
 
 // runTTSTurn connects to Cartesia, streams the sentence channel, and forwards
 // the resulting audio to the dispatcher at tool-result priority (priority 1).
-func (s *Session) runTTSTurn(ctx context.Context, sentenceCh <-chan string, chunkID string, tSTTFinal time.Time, ttfaMs *int64) {
+func (s *Session) runTTSTurn(ctx context.Context, sentenceCh <-chan string, chunkID string, tSTTFinal time.Time, ttfaMs *atomic.Int64) {
 	tTTSDial := time.Now()
 	audioCh, err := s.tts.Stream(ctx, sentenceCh)
 	if err != nil {
@@ -371,7 +415,7 @@ func (s *Session) runTTSTurn(ctx context.Context, sentenceCh <-chan string, chun
 	tTTSConnected := time.Now()
 	ms := tTTSConnected.Sub(tSTTFinal).Milliseconds()
 	if ttfaMs != nil {
-		*ttfaMs = ms
+		ttfaMs.Store(ms)
 	}
 
 	var recordCh <-chan []byte
