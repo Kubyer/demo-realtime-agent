@@ -126,8 +126,9 @@ func (t *TwilioWebSocket) WriteStream(ctx context.Context, audio <-chan []byte) 
 }
 
 // ClearBuffer sends the Twilio clear event, instructing Twilio to discard its
-// audio queue. Safe to call from any goroutine.
-func (t *TwilioWebSocket) ClearBuffer() {
+// audio queue. The bargein parameter is unused by Twilio. Safe to call from
+// any goroutine.
+func (t *TwilioWebSocket) ClearBuffer(_ bool) {
 	msg := map[string]string{
 		"event":     "clear",
 		"streamSid": t.streamSid,

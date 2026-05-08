@@ -1,0 +1,7 @@
+# Required for DNSMOS scoring (optional — score.py works without it,
+# overlap detection uses only the stdlib).
+onnxruntime>=1.17.0
+
+# Download dnsmos_p835.onnx from:
+# https://github.com/microsoft/DNS-Challenge/tree/master/DNSMOS
+# and place it at backend/qa/dnsmos_p835.onnx

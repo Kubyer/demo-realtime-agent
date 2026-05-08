@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import CallHistory from '@/components/CallHistory';
+import DashboardView from '@/components/DashboardView';
+import OutreachView from '@/components/OutreachView';
 import SystemPromptEditor from '@/components/SystemPromptEditor';
 import StartCallPanel from '@/components/StartCallPanel';
 import LiveCallView from '@/components/LiveCallView';
@@ -9,33 +11,33 @@ import { useEventsSocket } from '@/hooks/useEventsSocket';
 import { useVoiceSession, wsUrl } from '@/hooks/useVoiceSession';
 import type { Chunk } from '@/hooks/useEventsSocket';
 
-type View = 'dashboard' | 'settings';
+type View = 'dashboard' | 'logs' | 'outreach' | 'settings';
 
-const NAV = [
-  { id: 'dashboard', label: 'Dashboard',  icon: 'dashboard',    view: 'dashboard' as View },
-  { id: 'calls',     label: 'Call Logs',  icon: 'call',         view: 'dashboard' as View },
-  { id: 'contacts',  label: 'Contacts',   icon: 'group',        view: null },
-  { id: 'analytics', label: 'Analytics',  icon: 'insert_chart', view: null },
-  { id: 'settings',  label: 'Settings',   icon: 'settings',     view: 'settings' as View },
+const NAV: { id: string; label: string; icon: string; view: View }[] = [
+  { id: 'dashboard', label: 'Dashboard',  icon: 'dashboard',    view: 'dashboard' },
+  { id: 'logs',      label: 'Logs',        icon: 'history',      view: 'logs' },
+  { id: 'outreach',  label: 'Outreach',    icon: 'campaign',     view: 'outreach' },
+  { id: 'settings',  label: 'Settings',    icon: 'settings',     view: 'settings' },
 ];
+
+const PAGE_TITLES: Record<View, string> = {
+  dashboard: 'Dashboard',
+  logs:      'Logs',
+  outreach:  'Outreach',
+  settings:  'Settings',
+};
 
 export default function Home() {
   const [view, setView]           = useState<View>('dashboard');
-  const [activeNav, setActiveNav] = useState('dashboard');
   const [panelOpen, setPanelOpen] = useState(false);
   const [liveCallOpen, setLiveCallOpen] = useState(false);
   const [search, setSearch]       = useState('');
 
-  // Global events socket — shared across all views.
   const { chunks, connected, sessionId, latestMetrics, getToolEvents, onToolEvent } = useEventsSocket(wsUrl('/events'));
+  const { recording, interrupted, startSession, stopSession, error, syncCancels } = useVoiceSession(chunks);
 
-  // Voice session — audio WebSocket + microphone management.
-  const { recording, startSession, stopSession, error, syncCancels } = useVoiceSession(chunks);
-
-  // Sync cancellation events from the events socket into the audio engine.
   useEffect(() => { syncCancels(); }, [syncCancels]);
 
-  // When a call becomes active, open the live overlay and close the start panel.
   useEffect(() => {
     if (recording) {
       setPanelOpen(false);
@@ -44,8 +46,6 @@ export default function Home() {
       setLiveCallOpen(false);
     }
   }, [recording]);
-
-  const pageTitle = view === 'settings' ? 'Settings' : 'Call History';
 
   return (
     <div className="h-screen overflow-hidden flex">
@@ -64,7 +64,7 @@ export default function Home() {
           </div>
         </div>
 
-        {/* CTA / live indicator */}
+        {/* CTA */}
         {recording ? (
           <button
             onClick={() => setLiveCallOpen(true)}
@@ -87,26 +87,19 @@ export default function Home() {
         {/* Nav links */}
         <div className="flex-1 flex flex-col gap-0.5 overflow-y-auto">
           {NAV.map(item => {
-            const active = activeNav === item.id;
+            const active = view === item.view;
             return (
               <a
                 key={item.id}
                 href="#"
-                onClick={e => {
-                  e.preventDefault();
-                  setActiveNav(item.id);
-                  if (item.view) setView(item.view);
-                }}
+                onClick={e => { e.preventDefault(); setView(item.view); }}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] transition-colors duration-150 ${
                   active
                     ? 'text-blue-600 bg-blue-50 font-semibold border-r-2 border-blue-600'
                     : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
                 }`}
               >
-                <span
-                  className="material-symbols-outlined text-[20px]"
-                  style={active ? { fontVariationSettings: "'FILL' 1" } : {}}
-                >
+                <span className="material-symbols-outlined text-[20px]" style={active ? { fontVariationSettings: "'FILL' 1" } : {}}>
                   {item.icon}
                 </span>
                 {item.label}
@@ -119,7 +112,7 @@ export default function Home() {
         <div className="pt-4 border-t border-slate-200">
           <a href="#" className="flex items-center gap-3 px-3 py-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors text-[13px]">
             <span className="material-symbols-outlined text-[20px]">help_outline</span>
-            Help Support
+            Help &amp; Support
           </a>
         </div>
       </nav>
@@ -131,9 +124,9 @@ export default function Home() {
         <header className="fixed top-0 right-0 w-[calc(100%-240px)] border-b border-slate-200 shadow-sm bg-white/80 backdrop-blur-md flex justify-between items-center h-16 px-8 z-40">
           <div className="flex items-center gap-4 flex-1">
             <h2 className="text-[24px] font-semibold text-slate-900 leading-none tracking-tight mr-4 shrink-0">
-              {pageTitle}
+              {PAGE_TITLES[view]}
             </h2>
-            {view === 'dashboard' && (
+            {view === 'logs' && (
               <div className="relative w-64 hidden sm:block">
                 <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[18px]">search</span>
                 <input
@@ -147,17 +140,11 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-1">
             <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '4px 10px',
-              borderRadius: '99px',
+              display: 'flex', alignItems: 'center', gap: '6px',
+              padding: '4px 10px', borderRadius: '99px',
               background: connected ? 'rgba(16,185,129,0.08)' : 'rgba(239,68,68,0.08)',
               border: `1px solid ${connected ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`,
-              fontSize: '11px',
-              color: connected ? '#10b981' : '#ef4444',
-              fontWeight: 600,
-              marginRight: '8px',
+              fontSize: '11px', color: connected ? '#10b981' : '#ef4444', fontWeight: 600, marginRight: '8px',
             }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: connected ? '#10b981' : '#ef4444' }} />
               {connected ? 'WS' : 'Off'}
@@ -172,22 +159,38 @@ export default function Home() {
           </div>
         </header>
 
-        {/* Main canvas — always shows dashboard/settings */}
-        <main
-          className="flex-1 overflow-hidden bg-background"
-          style={{ paddingTop: 64 }}
-        >
+        {/* Main canvas */}
+        <main className="flex-1 overflow-hidden bg-background" style={{ paddingTop: 64 }}>
           <div className="h-full overflow-y-auto" style={{ padding: '24px 24px' }}>
             <div className="max-w-7xl mx-auto">
-              {view === 'dashboard' && <CallHistory searchQuery={search} />}
-              {view === 'settings' && (
-                <div className="max-w-2xl">
-                  <div className="bg-surface rounded-xl border border-outline-variant shadow-sm p-6">
-                    <p className="text-[11px] font-bold uppercase tracking-widest text-on-surface-variant mb-4">System Prompt</p>
-                    <SystemPromptEditor />
+              {view === 'dashboard' && <DashboardView />}
+              {view === 'logs' && (
+                <>
+                  {/* Future tabs: Calls | Tickets | Emails | SMS */}
+                  <div className="flex items-center gap-1 mb-5 border-b border-outline-variant pb-0">
+                    {[
+                      { id: 'calls', label: 'Calls', active: true },
+                      { id: 'tickets', label: 'Tickets', active: false },
+                      { id: 'emails', label: 'Emails', active: false },
+                      { id: 'sms', label: 'SMS', active: false },
+                    ].map(tab => (
+                      <div key={tab.id} className={`px-4 py-2.5 text-[12px] font-bold uppercase tracking-wider border-b-2 -mb-px cursor-default ${
+                        tab.active
+                          ? 'border-primary text-primary'
+                          : 'border-transparent text-on-surface-variant opacity-50 cursor-not-allowed'
+                      }`}>
+                        {tab.label}
+                        {!tab.active && (
+                          <span className="ml-1.5 text-[9px] font-bold uppercase px-1 py-0.5 rounded bg-surface-variant text-on-surface-variant">soon</span>
+                        )}
+                      </div>
+                    ))}
                   </div>
-                </div>
+                  <CallHistory searchQuery={search} />
+                </>
               )}
+              {view === 'outreach' && <OutreachView />}
+              {view === 'settings' && <SystemPromptEditor />}
             </div>
           </div>
         </main>
@@ -195,40 +198,11 @@ export default function Home() {
         {/* ── Live call overlay ─────────────────────────── */}
         {recording && liveCallOpen && (
           <div
-            style={{
-              position: 'fixed',
-              inset: 0,
-              background: 'rgba(15,23,42,0.55)',
-              backdropFilter: 'blur(4px)',
-              zIndex: 200,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: '20px',
-            }}
+            style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)', backdropFilter: 'blur(4px)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}
             onClick={(e) => { if (e.target === e.currentTarget) setLiveCallOpen(false); }}
           >
-            <div style={{
-              width: '100%',
-              maxWidth: '1440px',
-              height: '100%',
-              background: '#fff',
-              borderRadius: '16px',
-              overflow: 'hidden',
-              boxShadow: '0 32px 80px rgba(0,0,0,0.35)',
-              display: 'flex',
-              flexDirection: 'column',
-            }}>
-              {/* Overlay title bar */}
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.75rem',
-                padding: '0.6rem 1rem',
-                borderBottom: '1px solid #e2e8f0',
-                background: '#fff',
-                flexShrink: 0,
-              }}>
+            <div style={{ width: '100%', maxWidth: '1440px', height: '100%', background: '#fff', borderRadius: '16px', overflow: 'hidden', boxShadow: '0 32px 80px rgba(0,0,0,0.35)', display: 'flex', flexDirection: 'column' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.6rem 1rem', borderBottom: '1px solid #e2e8f0', background: '#fff', flexShrink: 0 }}>
                 <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" style={{ display: 'inline-block' }} />
                 <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#0f172a' }}>Live Call</span>
                 {sessionId && (
@@ -240,7 +214,6 @@ export default function Home() {
                 <button
                   onClick={() => setLiveCallOpen(false)}
                   style={{ padding: '4px', borderRadius: '6px', border: 'none', background: 'transparent', color: '#64748b', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                  title="Minimiser"
                 >
                   <span className="material-symbols-outlined" style={{ fontSize: 20 }}>remove</span>
                 </button>
@@ -252,7 +225,6 @@ export default function Home() {
                   Terminer
                 </button>
               </div>
-
               <div style={{ flex: 1, overflow: 'hidden' }}>
                 <LiveCallView
                   chunks={chunks}
@@ -265,6 +237,7 @@ export default function Home() {
                   error={error}
                   getToolEvents={getToolEvents}
                   onToolEvent={onToolEvent}
+                  interrupted={interrupted}
                 />
               </div>
             </div>
@@ -272,7 +245,6 @@ export default function Home() {
         )}
       </div>
 
-      {/* ── Settings / Start Call slide-in panel ─────── */}
       <StartCallPanel
         open={panelOpen}
         onClose={() => setPanelOpen(false)}

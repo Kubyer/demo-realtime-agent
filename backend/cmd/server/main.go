@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -29,10 +30,56 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+// smsReply calls the configured LLM to generate a short SMS reply.
+func smsReply(ctx context.Context, cfg *config.Config, from, body string, log *slog.Logger) string {
+	fallback := "Merci pour votre message. Un conseiller vous répondra bientôt."
+	if cfg.GroqAPIKey == "" {
+		return fallback
+	}
+
+	payload := map[string]any{
+		"model": cfg.GroqModel,
+		"messages": []map[string]string{
+			{
+				"role":    "system",
+				"content": "Tu es Léa, assistante commerciale. Réponds en moins de 160 caractères (SMS). Sois concis, utile, poli.",
+			},
+			{"role": "user", "content": body},
+		},
+		"max_tokens": 80,
+	}
+	raw, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.groq.com/openai/v1/chat/completions", strings.NewReader(string(raw)))
+	req.Header.Set("Authorization", "Bearer "+cfg.GroqAPIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Warn("sms: groq request failed", "err", err)
+		return fallback
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Choices []struct {
+			Message struct{ Content string } `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || len(result.Choices) == 0 {
+		return fallback
+	}
+	reply := strings.TrimSpace(result.Choices[0].Message.Content)
+	if reply == "" {
+		return fallback
+	}
+	return reply
+}
+
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -209,6 +256,8 @@ func main() {
 		log.Info("call store: in-memory (set DATABASE_URL for persistence)")
 	}
 
+	qaStore := session.NewCallQAStore(log)
+
 	var dbConn *sql.DB
 	if cfg.DatabaseURL != "" {
 		var err error
@@ -230,9 +279,11 @@ func main() {
 		ElevenLabsModel:   cfg.ElevenLabsModel,
 		CartesiaAPIKey:    cfg.CartesiaAPIKey,
 		CartesiaWSURL:     cfg.CartesiaWSURL,
-		GradiumAPIKey:     cfg.GradiumAPIKey,
-		CalendlyAPIKey:    cfg.CalendlyAPIKey,
-		DB:                dbConn,
+		GradiumAPIKey:  cfg.GradiumAPIKey,
+		GeminiAPIKey:   cfg.GeminiAPIKey,
+		CalendlyAPIKey: cfg.CalendlyAPIKey,
+		DB:             dbConn,
+		QAStore:        qaStore,
 	}
 	manager := session.NewManager(sessCfg, hub, calls, log)
 
@@ -341,7 +392,13 @@ func main() {
 				req.VoiceID = "3C1zYzXNXNzrB66ON8rj"
 			}
 			if req.VoiceModel == "" {
-				req.VoiceModel = "eleven_flash_v2_5"
+				req.VoiceModel = "eleven_turbo_v2_5"
+			}
+			if req.LLMProvider == "" {
+				req.LLMProvider = "groq"
+			}
+			if req.LLMModel == "" {
+				req.LLMModel = "openai/gpt-oss-20b"
 			}
 			session.SetSettings(req)
 			w.WriteHeader(http.StatusNoContent)
@@ -368,9 +425,39 @@ func main() {
 		json.NewEncoder(w).Encode(records) //nolint:errcheck
 	})))
 
-	// /api/calls/{id} — GET returns a single call record with full transcript.
+	// /api/calls/{id} and /api/calls/{id}/qa — GET returns the post-call QA report (pending | done | failed).
+	// Registered before /api/calls/ so the more specific path wins.
 	mux.Handle("/api/calls/", corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := strings.TrimPrefix(r.URL.Path, "/api/calls/")
+		path := strings.TrimPrefix(r.URL.Path, "/api/calls/")
+		w.Header().Set("Content-Type", "application/json")
+
+		// Route: /api/calls/{id}/qa
+		if strings.HasSuffix(path, "/qa") {
+			id := strings.TrimSuffix(path, "/qa")
+			if id == "" {
+				http.Error(w, "missing id", http.StatusBadRequest)
+				return
+			}
+			result, ok := qaStore.Get(id)
+			if !ok {
+				// Call exists but QA not triggered yet (very short call, no recording).
+				if _, callOK := manager.Calls.Get(id); callOK {
+					w.WriteHeader(http.StatusAccepted)
+					json.NewEncoder(w).Encode(map[string]string{"status": "not_available"}) //nolint:errcheck
+					return
+				}
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+			if result.Status == "pending" {
+				w.WriteHeader(http.StatusAccepted)
+			}
+			json.NewEncoder(w).Encode(result) //nolint:errcheck
+			return
+		}
+
+		// Route: /api/calls/{id}
+		id := path
 		if id == "" {
 			http.Error(w, "missing id", http.StatusBadRequest)
 			return
@@ -380,9 +467,96 @@ func main() {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(rec) //nolint:errcheck
 	})))
+
+	// /api/outreach/call — POST triggers an outbound Twilio call to a given number.
+	// Body: { "to": "+33XXXXXXXXX" }
+	// Requires TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER in env.
+	mux.Handle("/api/outreach/call", corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.TwilioAccountSID == "" || cfg.TwilioAuthToken == "" || cfg.TwilioFromNumber == "" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{"error": "TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER must be set to enable outbound calls"}) //nolint:errcheck
+			return
+		}
+
+		var req struct {
+			To string `json:"to"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.To == "" {
+			http.Error(w, `{"error":"body must be {\"to\":\"+E164number\"}"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Resolve the public TwiML URL.
+		publicURL := os.Getenv("PUBLIC_URL")
+		if publicURL == "" {
+			if app := os.Getenv("FLY_APP_NAME"); app != "" {
+				publicURL = "https://" + app + ".fly.dev"
+			}
+		}
+		if publicURL == "" {
+			publicURL = "http://localhost:" + cfg.HTTPPort
+		}
+		twimlURL := publicURL + "/twiml"
+
+		// Call Twilio REST API.
+		form := url.Values{}
+		form.Set("To", req.To)
+		form.Set("From", cfg.TwilioFromNumber)
+		form.Set("Url", twimlURL)
+
+		apiURL := fmt.Sprintf("https://api.twilio.com/2010-04-01/Accounts/%s/Calls.json", cfg.TwilioAccountSID)
+		twilioReq, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, apiURL, strings.NewReader(form.Encode()))
+		twilioReq.SetBasicAuth(cfg.TwilioAccountSID, cfg.TwilioAuthToken)
+		twilioReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+		resp, err := http.DefaultClient.Do(twilioReq)
+		if err != nil {
+			w.WriteHeader(http.StatusBadGateway)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Twilio request failed: " + err.Error()}) //nolint:errcheck
+			return
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+
+		if resp.StatusCode >= 300 {
+			w.WriteHeader(http.StatusBadGateway)
+			json.NewEncoder(w).Encode(map[string]string{"error": "Twilio error " + strconv.Itoa(resp.StatusCode) + ": " + string(body)}) //nolint:errcheck
+			return
+		}
+
+		var twilioResp struct {
+			SID    string `json:"sid"`
+			Status string `json:"status"`
+		}
+		json.Unmarshal(body, &twilioResp) //nolint:errcheck
+		log.Info("outbound call initiated", "to", req.To, "call_sid", twilioResp.SID)
+		json.NewEncoder(w).Encode(map[string]string{"call_sid": twilioResp.SID, "status": twilioResp.Status}) //nolint:errcheck
+	})))
+
+	// /twilio/sms — Twilio SMS webhook. Receives inbound SMS and replies via LLM.
+	// Point your Twilio number's SMS webhook to POST https://<host>/twilio/sms
+	mux.HandleFunc("/twilio/sms", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "parse error", http.StatusBadRequest)
+			return
+		}
+		from := r.FormValue("From")
+		body := r.FormValue("Body")
+		log.Info("inbound SMS", "from", from, "body", body)
+
+		// Simple LLM reply via Groq — same model used for voice.
+		reply := smsReply(r.Context(), cfg, from, body, log)
+
+		w.Header().Set("Content-Type", "text/xml")
+		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><Response><Message>%s</Message></Response>`, reply)
+	})
 
 	// /health — liveness probe.
 	// Serve recordings statically

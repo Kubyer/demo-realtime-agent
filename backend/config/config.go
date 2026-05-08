@@ -23,8 +23,14 @@ type Config struct {
 	CartesiaWSURL  string
 
 	GradiumAPIKey string
+	GeminiAPIKey  string // optional; needed only when LLM provider = "gemini"
 
 	DatabaseURL string // optional; falls back to in-memory store when empty
+
+	// Twilio REST credentials — optional, only required for outbound calls.
+	TwilioAccountSID string
+	TwilioAuthToken  string
+	TwilioFromNumber string // E.164 format, e.g. +33600000000
 
 	HTTPPort string
 	LogLevel string
@@ -50,8 +56,12 @@ func Load() (*Config, error) {
 	}
 
 	c.DatabaseURL = os.Getenv("DATABASE_URL")
+	c.TwilioAccountSID = os.Getenv("TWILIO_ACCOUNT_SID")
+	c.TwilioAuthToken = os.Getenv("TWILIO_AUTH_TOKEN")
+	c.TwilioFromNumber = os.Getenv("TWILIO_FROM_NUMBER")
 	c.CartesiaAPIKey = os.Getenv("CARTESIA_API_KEY")
 	c.GradiumAPIKey = os.Getenv("GRADIUM_API_KEY")
+	c.GeminiAPIKey = os.Getenv("GEMINI_API_KEY")
 
 	c.ElevenLabsVoiceID = getEnvOrDefault("ELEVENLABS_VOICE_ID", "3C1zYzXNXNzrB66ON8rj")
 

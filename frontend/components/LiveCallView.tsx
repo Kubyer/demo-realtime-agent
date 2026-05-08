@@ -29,6 +29,7 @@ interface Props {
   error: string | null;
   getToolEvents: () => ToolEvent[];
   onToolEvent: (fn: () => void) => () => void;
+  interrupted?: boolean;
 }
 
 export default function LiveCallView({
@@ -42,6 +43,7 @@ export default function LiveCallView({
   error,
   getToolEvents,
   onToolEvent,
+  interrupted,
 }: Props) {
   // Bump this whenever a book_meeting result arrives to refresh the calendar.
   const [calRefreshKey, setCalRefreshKey] = useState(0);
@@ -86,12 +88,35 @@ export default function LiveCallView({
             width: 8,
             height: 8,
             borderRadius: '50%',
-            background: connected ? '#10b981' : '#ef4444',
-            boxShadow: connected && recording ? '0 0 0 3px rgba(16,185,129,0.25)' : 'none',
+            background: interrupted ? '#ef4444' : (connected ? '#10b981' : '#ef4444'),
+            boxShadow: interrupted 
+              ? '0 0 0 4px rgba(239,68,68,0.4)' 
+              : (connected && recording ? '0 0 0 3px rgba(16,185,129,0.25)' : 'none'),
+            transition: 'all 0.2s ease',
+            animation: interrupted ? 'pulse 0.5s infinite alternate' : 'none',
           }} />
-          <span style={{ fontSize: '0.72rem', color: '#64748b' }}>
-            {connected ? (recording ? 'En écoute' : 'Connecté') : 'Déconnecté'}
+          <span style={{ 
+            fontSize: '0.72rem', 
+            fontWeight: 600,
+            color: interrupted ? '#ef4444' : '#64748b',
+            transition: 'color 0.2s ease'
+          }}>
+            {interrupted ? 'Barge-in détecté' : (connected ? (recording ? 'En écoute' : 'Connecté') : 'Déconnecté')}
           </span>
+          {interrupted && (
+            <div style={{
+              background: '#ef4444',
+              color: '#fff',
+              fontSize: '10px',
+              padding: '2px 8px',
+              borderRadius: '4px',
+              fontWeight: 800,
+              textTransform: 'uppercase',
+              marginLeft: 'auto'
+            }}>
+              Agent Silencé
+            </div>
+          )}
         </div>
 
         {error && (

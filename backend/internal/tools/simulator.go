@@ -75,67 +75,91 @@ func (s *Simulator) Execute(ctx context.Context, name, arguments string) (string
 	return result, nil
 }
 
-// checkAvailability returns available slots for the requested date.
-// It first tries the real Calendly API (to show real busy times), then
-// falls back to a deterministic mock that always has sensible afternoon slots.
+// checkAvailability returns available slots for one or more requested dates.
+// Accepts {"dates": ["2026-05-12", "2026-05-13"]} or legacy {"date": "2026-05-12"}.
 func (s *Simulator) checkAvailability(ctx context.Context, arguments string) (string, error) {
 	var args struct {
-		Date string `json:"date"`
+		Dates []string `json:"dates"`
+		Date  string   `json:"date"` // legacy single-date
 	}
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
 		return "", fmt.Errorf("parse args: %w", err)
 	}
-
-	// Validate and parse the date.
-	ref, err := time.Parse("2006-01-02", args.Date)
-	if err != nil {
-		return `{"error": "Format de date invalide, utilisez YYYY-MM-DD"}`, nil
+	if len(args.Dates) == 0 && args.Date != "" {
+		args.Dates = []string{args.Date}
+	}
+	if len(args.Dates) == 0 {
+		return `{"error": "Paramètre 'dates' manquant."}`, nil
 	}
 
-	// Don't offer slots in the past.
 	today := time.Now().Truncate(24 * time.Hour)
-	if ref.Before(today) {
-		return `{"error": "Cette date est déjà passée. Proposez un jour futur."}`, nil
+
+	type slot struct {
+		ISO   string `json:"iso"`
+		Label string `json:"label"`
+	}
+	type dateResult struct {
+		Date           string `json:"date"`
+		AvailableSlots []slot `json:"available_slots"`
+		Message        string `json:"message,omitempty"`
 	}
 
-	// Weekends: no availability.
-	wd := ref.Weekday()
-	if wd == time.Saturday || wd == time.Sunday {
-		return `{"error": "Pas de disponibilité le week-end. Proposez un jour de semaine."}`, nil
+	slotLabel := map[string]string{
+		"T09:00:00": "neuf heures",
+		"T10:00:00": "dix heures",
+		"T14:30:00": "quatorze heures trente",
+		"T16:00:00": "seize heures",
 	}
 
-	// Try to fetch real booked events from Calendly to avoid conflicts.
-	busySlots := s.fetchBusySlots(ctx, args.Date)
+	results := make([]dateResult, 0, len(args.Dates))
 
-	MockBookingsMu.RLock()
-	for _, mb := range MockBookings {
-		if len(mb.StartTime) >= 16 && mb.StartTime[:10] == args.Date {
-			busySlots = append(busySlots, mb.StartTime[:16])
+	for _, dateStr := range args.Dates {
+		ref, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			results = append(results, dateResult{Date: dateStr, Message: "Format de date invalide, utilisez YYYY-MM-DD"})
+			continue
 		}
-	}
-	MockBookingsMu.RUnlock()
-
-	// Generate mock available slots (09:00 and 14:30) avoiding busy times.
-	candidates := []string{
-		args.Date + "T09:00:00",
-		args.Date + "T10:00:00",
-		args.Date + "T14:30:00",
-		args.Date + "T16:00:00",
-	}
-
-	var available []string
-	for _, slot := range candidates {
-		if !isBusy(slot, busySlots) {
-			available = append(available, slot)
+		if ref.Before(today) {
+			results = append(results, dateResult{Date: dateStr, Message: "Date déjà passée."})
+			continue
 		}
+		wd := ref.Weekday()
+		if wd == time.Saturday || wd == time.Sunday {
+			results = append(results, dateResult{Date: dateStr, Message: "Pas de disponibilité le week-end."})
+			continue
+		}
+
+		busySlots := s.fetchBusySlots(ctx, dateStr)
+		MockBookingsMu.RLock()
+		for _, mb := range MockBookings {
+			if len(mb.StartTime) >= 16 && mb.StartTime[:10] == dateStr {
+				busySlots = append(busySlots, mb.StartTime[:16])
+			}
+		}
+		MockBookingsMu.RUnlock()
+
+		candidateISOs := []string{
+			dateStr + "T09:00:00",
+			dateStr + "T10:00:00",
+			dateStr + "T14:30:00",
+			dateStr + "T16:00:00",
+		}
+		var available []slot
+		for _, iso := range candidateISOs {
+			if !isBusy(iso, busySlots) {
+				suffix := iso[10:] // "T09:00:00"
+				available = append(available, slot{ISO: iso, Label: slotLabel[suffix]})
+			}
+		}
+		msg := ""
+		if len(available) == 0 {
+			msg = "Aucun créneau disponible ce jour-là."
+		}
+		results = append(results, dateResult{Date: dateStr, AvailableSlots: available, Message: msg})
 	}
 
-	if len(available) == 0 {
-		return fmt.Sprintf(`{"date": "%s", "available_slots": [], "message": "Aucun créneau disponible ce jour-là."}`, args.Date), nil
-	}
-
-	slotsJSON, _ := json.Marshal(available)
-	return fmt.Sprintf(`{"date": "%s", "available_slots": %s}`, args.Date, slotsJSON), nil
+	out, _ := json.Marshal(results)
+	return string(out), nil
 }
 
 // fetchBusySlots calls the Calendly API to get booked event start times for a day.

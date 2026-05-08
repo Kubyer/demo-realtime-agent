@@ -100,6 +100,10 @@ export function useEventsSocket(url: string) {
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attemptRef = useRef(0);
   const mountedRef = useRef(true);
+  // Incremented on every intentional close (cleanup). The onclose handler
+  // captures the generation at connect time; if they differ the socket is
+  // stale and must not schedule a reconnect.
+  const wsGenerationRef = useRef(0);
 
   // Tool events are kept in a ref+callback pattern so callers can subscribe
   // without forcing a full re-render on every transcript chunk.
@@ -122,6 +126,7 @@ export function useEventsSocket(url: string) {
 
   const connect = useCallback(() => {
     if (!mountedRef.current) return;
+    const generation = ++wsGenerationRef.current;
     const ws = new WebSocket(url);
     wsRef.current = ws;
 
@@ -187,6 +192,8 @@ export function useEventsSocket(url: string) {
     ws.onclose = () => {
       dispatch({ type: 'DISCONNECTED' });
       if (!mountedRef.current) return;
+      // Stale socket closed by cleanup — don't reconnect; the new effect will.
+      if (wsGenerationRef.current !== generation) return;
       // Exponential backoff: 2s, 4s, 8s … capped at 30s.
       attemptRef.current += 1;
       const delay = Math.min(30_000, 2_000 * Math.pow(2, attemptRef.current - 1));
@@ -199,6 +206,7 @@ export function useEventsSocket(url: string) {
     connect();
     return () => {
       mountedRef.current = false;
+      wsGenerationRef.current++; // invalidate this socket's onclose reconnect
       wsRef.current?.close();
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
     };

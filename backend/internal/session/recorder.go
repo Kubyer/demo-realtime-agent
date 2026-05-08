@@ -9,32 +9,48 @@ import (
 	"sync"
 )
 
-// Recorder accumulates mixed audio (user + assistant) as PCM-16 LE mono 8 kHz
-// and flushes a valid WAV file on Save.
+// RecorderPaths holds the WAV file paths produced by Recorder.Save.
+// User and Agent paths are empty if no audio was recorded for that side.
+type RecorderPaths struct {
+	Mixed string // interleaved user+agent, always the primary recording
+	User  string // user audio only — used for overlap analysis
+	Agent string // agent (TTS) audio only — used for MOS scoring
+}
+
+// HasAny returns true if at least the mixed recording was written.
+func (p RecorderPaths) HasAny() bool { return p.Mixed != "" }
+
+// Recorder accumulates audio separately for the user (inbound) and the
+// assistant (TTS outbound), then flushes valid WAV files on Save.
 //
-// Both WriteUser and WriteAssistant are safe for concurrent use. Audio is
-// interleaved in the order goroutines acquire the mutex, which matches
-// real-time arrival order closely enough for debugging and replay.
+// Three files are produced:
+//   - recordings/{id}.wav          — mixed (interleaved arrival order)
+//   - recordings/{id}-user.wav     — user only (for overlap analysis)
+//   - recordings/{id}-agent.wav    — agent only (for MOS scoring)
+//
+// All Write* methods are safe for concurrent use.
 type Recorder struct {
-	mu     sync.Mutex
-	buf    []byte // PCM-16 LE samples
-	source string // "twilio" | "browser"
+	mu        sync.Mutex
+	mixBuf    []byte // interleaved PCM-16 LE 8 kHz (user + agent)
+	userBuf   []byte // user only
+	agentBuf  []byte // agent only
+	source    string // "twilio" | "browser"
 }
 
 func NewRecorder(source string) *Recorder {
 	return &Recorder{source: source}
 }
 
-// OffsetMs returns the current elapsed time of the recorded audio in milliseconds.
-// Since we record 8 kHz 16-bit PCM, there are 16 bytes per millisecond (8000 samples/sec * 2 bytes/sample / 1000 = 16 bytes/ms).
+// OffsetMs returns elapsed recording time in milliseconds.
+// 8 kHz × 16-bit = 16 bytes per millisecond.
 func (r *Recorder) OffsetMs() int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return int64(len(r.buf) / 16)
+	return int64(len(r.mixBuf) / 16)
 }
 
 // WriteUser appends inbound user audio.
-//   - Twilio:  8 kHz µ-law (PCMU, inverted bits) → decoded to PCM-16 LE 8 kHz.
+//   - Twilio:  8 kHz µ-law → decoded to PCM-16 LE 8 kHz.
 //   - Browser: 16 kHz PCM-16 LE → decimated 2:1 to 8 kHz.
 func (r *Recorder) WriteUser(chunk []byte) {
 	if len(chunk) == 0 {
@@ -47,58 +63,83 @@ func (r *Recorder) WriteUser(chunk []byte) {
 		pcm = mulawToPCM16(chunk)
 	}
 	r.mu.Lock()
-	r.buf = append(r.buf, pcm...)
+	r.mixBuf = append(r.mixBuf, pcm...)
+	r.userBuf = append(r.userBuf, pcm...)
 	r.mu.Unlock()
 }
 
-// WriteAssistant appends outbound assistant audio (always 8 kHz µ-law from ElevenLabs).
+// WriteAssistant appends outbound assistant audio (always 8 kHz µ-law from TTS).
 func (r *Recorder) WriteAssistant(chunk []byte) {
 	if len(chunk) == 0 {
 		return
 	}
 	pcm := mulawToPCM16(chunk)
 	r.mu.Lock()
-	r.buf = append(r.buf, pcm...)
+	r.mixBuf = append(r.mixBuf, pcm...)
+	r.agentBuf = append(r.agentBuf, pcm...)
 	r.mu.Unlock()
 }
 
-// Save writes recordings/{sessionID}.wav and returns the path.
-// It is safe to call Save while WriteUser/WriteAssistant are still running;
-// it snapshots the buffer under the lock.
-func (r *Recorder) Save(sessionID string) (string, error) {
+// Save writes up to three WAV files under recordings/ and returns their paths.
+// It snapshots buffers under the lock so concurrent writes during Save are safe.
+// Files for empty channels (e.g. no agent audio recorded) are skipped.
+func (r *Recorder) Save(sessionID string) (RecorderPaths, error) {
 	r.mu.Lock()
-	data := make([]byte, len(r.buf))
-	copy(data, r.buf)
+	mix := make([]byte, len(r.mixBuf))
+	copy(mix, r.mixBuf)
+	user := make([]byte, len(r.userBuf))
+	copy(user, r.userBuf)
+	agent := make([]byte, len(r.agentBuf))
+	copy(agent, r.agentBuf)
 	r.mu.Unlock()
 
-	if len(data) == 0 {
-		// Do not create empty recordings
-		return "", nil
+	if len(mix) == 0 {
+		return RecorderPaths{}, nil
 	}
 
-	if err := os.MkdirAll("recordings", 0o755); err != nil {
-		return "", fmt.Errorf("recorder mkdir: %w", err)
+	// Use the absolute path of recordings/ so QA and other callers
+	// can open the files regardless of their own working directory.
+	recDir, err := filepath.Abs("recordings")
+	if err != nil {
+		return RecorderPaths{}, fmt.Errorf("recorder abs path: %w", err)
 	}
-	path := filepath.Join("recordings", sessionID+".wav")
+	if err := os.MkdirAll(recDir, 0o755); err != nil {
+		return RecorderPaths{}, fmt.Errorf("recorder mkdir: %w", err)
+	}
+
+	var paths RecorderPaths
+
+	if paths.Mixed, err = writeWAV(filepath.Join(recDir, sessionID+".wav"), mix); err != nil {
+		return paths, err
+	}
+	if len(user) > 0 {
+		paths.User, _ = writeWAV(filepath.Join(recDir, sessionID+"-user.wav"), user)
+	}
+	if len(agent) > 0 {
+		paths.Agent, _ = writeWAV(filepath.Join(recDir, sessionID+"-agent.wav"), agent)
+	}
+	return paths, nil
+}
+
+// writeWAV creates a PCM-16 LE mono 8 kHz WAV file at path and returns the path.
+func writeWAV(path string, data []byte) (string, error) {
 	f, err := os.Create(path)
 	if err != nil {
-		return "", fmt.Errorf("recorder create: %w", err)
+		return "", fmt.Errorf("recorder create %s: %w", path, err)
 	}
 	defer f.Close()
-
 	if err := writeWAVHeader(f, 8000, 1, 16, len(data)); err != nil {
 		return "", err
 	}
 	if _, err := f.Write(data); err != nil {
-		return "", fmt.Errorf("recorder write data: %w", err)
+		return "", fmt.Errorf("recorder write data %s: %w", path, err)
 	}
 	return path, nil
 }
 
-// teeAudio fans out src into two channels. The primary channel (a) is sent to
-// first and blocks if full; the recorder channel (b) receives a non-blocking
-// best-effort copy so a stalled recorder never back-pressures the main audio
-// pipeline. Both channels are closed when src closes or ctx is cancelled.
+// teeAudio fans out src into two channels. The primary channel (a) is always
+// served first. The recorder channel (b) is best-effort: drops if full so a
+// stalled recorder never back-pressures the main audio pipeline.
 func teeAudio(ctx context.Context, src <-chan []byte) (primary <-chan []byte, recorder <-chan []byte) {
 	a := make(chan []byte, 64)
 	b := make(chan []byte, 64)
@@ -116,8 +157,6 @@ func teeAudio(ctx context.Context, src <-chan []byte) (primary <-chan []byte, re
 				case <-ctx.Done():
 					return
 				}
-				// Non-blocking: drop the recorder copy rather than stalling
-				// the primary pipeline (e.g. when dispatcher stops reading on barge-in).
 				select {
 				case b <- chunk:
 				default:
@@ -134,15 +173,12 @@ func teeAudio(ctx context.Context, src <-chan []byte) (primary <-chan []byte, re
 // G.711 µ-law decode
 // ---------------------------------------------------------------------------
 
-// mulawTable maps PCMU byte values (inverted µ-law as transmitted by Twilio/RTP)
-// to signed PCM-16 samples. Computed at init time using the CCITT G.711 algorithm
-// (matches sox/libsndfile: bias=0x84, ~byte to un-invert PCMU).
 var mulawTable [256]int16
 
 func init() {
-	const bias = int16(0x84) // 132
+	const bias = int16(0x84)
 	for i := range mulawTable {
-		u := ^byte(i) // undo PCMU bit-inversion
+		u := ^byte(i)
 		mant := int16(u & 0x0F)
 		exp := uint((u & 0x70) >> 4)
 		t := ((mant << 3) + bias) << exp
@@ -154,7 +190,6 @@ func init() {
 	}
 }
 
-// mulawToPCM16 converts a slice of PCMU bytes to PCM-16 LE bytes (2× size).
 func mulawToPCM16(ulaw []byte) []byte {
 	out := make([]byte, len(ulaw)*2)
 	for i, b := range ulaw {
@@ -163,8 +198,6 @@ func mulawToPCM16(ulaw []byte) []byte {
 	return out
 }
 
-// pcm16kTo8k decimates 16 kHz PCM-16 LE (browser) to 8 kHz by keeping
-// every other sample. Simple 2:1 decimation is sufficient for voice.
 func pcm16kTo8k(pcm []byte) []byte {
 	nSamples := len(pcm) / 2
 	out := make([]byte, (nSamples/2)*2)
@@ -188,8 +221,8 @@ func writeWAVHeader(f *os.File, sampleRate, channels, bitDepth, dataLen int) err
 	binary.LittleEndian.PutUint32(h[4:], uint32(36+dataLen))
 	copy(h[8:], "WAVE")
 	copy(h[12:], "fmt ")
-	binary.LittleEndian.PutUint32(h[16:], 16) // chunk size
-	binary.LittleEndian.PutUint16(h[20:], 1)  // PCM
+	binary.LittleEndian.PutUint32(h[16:], 16)
+	binary.LittleEndian.PutUint16(h[20:], 1)
 	binary.LittleEndian.PutUint16(h[22:], uint16(channels))
 	binary.LittleEndian.PutUint32(h[24:], uint32(sampleRate))
 	binary.LittleEndian.PutUint32(h[28:], uint32(byteRate))

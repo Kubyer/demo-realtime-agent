@@ -16,6 +16,8 @@ type AudioTransport interface {
 	WriteStream(ctx context.Context, audio <-chan []byte) error
 
 	// ClearBuffer sends an out-of-band signal to the transport to discard any
-	// audio it has buffered but not yet played. Safe to call from any goroutine.
-	ClearBuffer()
+	// audio it has buffered but not yet played. bargein=true allows transports
+	// to signal a user-initiated interruption vs. a routine audio swap.
+	// Safe to call from any goroutine.
+	ClearBuffer(bargein bool)
 }

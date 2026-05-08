@@ -31,6 +31,7 @@ export function wsUrl(path: string): string {
 
 export function useVoiceSession(chunks: Chunk[]) {
   const [recording, setRecording] = useState(false);
+  const [interrupted, setInterrupted] = useState(false);
   const [error, setError]         = useState<string | null>(null);
 
   const wsRef        = useRef<WebSocket | null>(null);
@@ -79,8 +80,27 @@ export function useVoiceSession(chunks: Chunk[]) {
         ws.onerror = () => reject(new Error('WebSocket connection failed'));
       });
 
-      // Incoming binary frames = mulaw 8 kHz TTS audio → decode and schedule.
+      // Incoming messages: binary = mulaw TTS audio; text = control frame.
       ws.onmessage = (ev) => {
+        // Fix #3: Handle backend clear signal — stop all queued audio immediately.
+        if (typeof ev.data === 'string') {
+          try {
+            const ctrl = JSON.parse(ev.data);
+            if (ctrl.type === 'clear') {
+              // Only show the barge-in indicator for actual user interruptions,
+              // not routine filler→TTS audio swaps.
+              if (ctrl.bargein === true) {
+                setInterrupted(true);
+                setTimeout(() => setInterrupted(false), 1000);
+              }
+              sourcesRef.current.forEach(s => { try { s.stop(); } catch { /* already stopped */ } });
+              sourcesRef.current = [];
+              if (audioCtxRef.current) nextPlayRef.current = audioCtxRef.current.currentTime;
+            }
+          } catch { /* not JSON, ignore */ }
+          return;
+        }
+
         if (!(ev.data instanceof ArrayBuffer)) return;
         const ctx = audioCtxRef.current;
         if (!ctx) return;
@@ -141,5 +161,5 @@ export function useVoiceSession(chunks: Chunk[]) {
     setRecording(false);
   }, []);
 
-  return { recording, startSession, stopSession, error, syncCancels };
+  return { recording, interrupted, startSession, stopSession, error, syncCancels };
 }

@@ -65,6 +65,7 @@ func (d *AudioDispatcher) Run(ctx context.Context) {
 		select {
 		case <-d.BargeinCh:
 			d.cancelCurrent()
+			d.flushQueues()
 			d.log.Info("dispatcher: barge-in detected")
 			continue
 		default:
@@ -73,13 +74,14 @@ func (d *AudioDispatcher) Run(ctx context.Context) {
 		// Tier 1 + 2: block until something arrives.
 		select {
 		case <-ctx.Done():
-			d.cancelCurrent()
+			d.stopCurrent()
 			return
 
 		// Barge-in re-checked here so we don't miss a signal that arrived
 		// while we were between the two selects.
 		case <-d.BargeinCh:
 			d.cancelCurrent()
+			d.flushQueues()
 			d.log.Info("dispatcher: barge-in detected (tier1)")
 
 		case src, ok := <-d.ToolResultCh:
@@ -114,10 +116,16 @@ func (d *AudioDispatcher) SignalBargein() {
 	}
 }
 
-// play cancels the current stream, then starts a new one for the given source.
-// Playing events with actual text are broadcast by the session layer, not here.
+// play preempts the current stream and starts a new one for src.
+// Uses a silent clear (bargein=false) so the UI does not flash the
+// barge-in indicator for routine filler→TTS or TTS→TTS transitions.
 func (d *AudioDispatcher) play(ctx context.Context, src AudioSource) {
-	d.cancelCurrent()
+	if chunkID := d.stopCurrent(); chunkID != "" {
+		d.transport.ClearBuffer(false)
+		if d.hub != nil {
+			d.hub.BroadcastCancelled(chunkID)
+		}
+	}
 
 	child, cancel := context.WithCancel(ctx)
 	d.cancelMu.Lock()
@@ -143,21 +151,55 @@ func (d *AudioDispatcher) play(ctx context.Context, src AudioSource) {
 	}()
 }
 
-// cancelCurrent cancels the active audio stream and clears the transport
-// buffer. Idempotent: safe to call when nothing is playing.
-func (d *AudioDispatcher) cancelCurrent() {
+// stopCurrent cancels the active audio stream goroutine and returns its
+// chunkID. Returns "" when nothing is playing. Does NOT send a transport
+// clear or broadcast — callers decide whether this is a barge-in.
+func (d *AudioDispatcher) stopCurrent() string {
 	d.cancelMu.Lock()
 	cancel := d.currentCancel
 	chunkID := d.currentChunk
 	d.currentCancel = nil
 	d.currentChunk = ""
 	d.cancelMu.Unlock()
+	if cancel == nil {
+		return ""
+	}
+	cancel()
+	return chunkID
+}
 
-	if cancel != nil {
-		cancel()
-		d.transport.ClearBuffer()
-		if d.hub != nil && chunkID != "" {
+// cancelCurrent is the full barge-in path: stops the stream, sends a
+// bargein-flagged clear to the transport, and broadcasts the cancellation.
+// Idempotent: safe to call when nothing is playing.
+func (d *AudioDispatcher) cancelCurrent() {
+	chunkID := d.stopCurrent()
+	if chunkID != "" {
+		d.transport.ClearBuffer(true)
+		if d.hub != nil {
 			d.hub.BroadcastCancelled(chunkID)
+		}
+	}
+}
+// flushQueues drains ToolResultCh and FillerCh so stale audio queued before
+// barge-in does not play after the interruption completes.
+func (d *AudioDispatcher) flushQueues() {
+	for {
+		select {
+		case src, ok := <-d.ToolResultCh:
+			if !ok {
+				return
+			}
+			d.log.Info("dispatcher: flushing stale tool result", "chunk_id", src.ChunkID)
+			if d.hub != nil {
+				d.hub.BroadcastCancelled(src.ChunkID)
+			}
+		case src, ok := <-d.FillerCh:
+			if !ok {
+				return
+			}
+			d.log.Info("dispatcher: flushing stale filler", "chunk_id", src.ChunkID)
+		default:
+			return
 		}
 	}
 }

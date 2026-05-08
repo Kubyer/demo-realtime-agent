@@ -29,11 +29,14 @@ type CallRecord struct {
 	StartedAt  int64       `json:"started_at"`         // unix millis
 	EndedAt    *int64      `json:"ended_at,omitempty"` // unix millis
 	Transcript []TurnEntry `json:"transcript"`
+	// Config is snapshotted at session start — every parameter of the pipeline.
+	Config *CallConfig `json:"config,omitempty"`
 }
 
 // CallStorer is implemented by both the in-memory store and the Postgres store.
 type CallStorer interface {
 	Start(id, source string)
+	SetConfig(id string, cfg CallConfig)
 	AppendTurn(id string, entry TurnEntry)
 	End(id string)
 	List() []CallRecord
@@ -69,6 +72,14 @@ func (s *CallStore) Start(id, source string) {
 	defer s.mu.Unlock()
 	s.records = append(s.records, r)
 	s.index[id] = r
+}
+
+func (s *CallStore) SetConfig(id string, cfg CallConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r, ok := s.index[id]; ok {
+		r.Config = &cfg
+	}
 }
 
 func (s *CallStore) AppendTurn(id string, entry TurnEntry) {
@@ -123,7 +134,7 @@ func (s *CallStore) Get(id string) (CallRecord, bool) {
 // Postgres store
 // ---------------------------------------------------------------------------
 
-// pgSchema is run once on startup to create the table if it doesn't exist.
+// pgSchema is run once on startup to create or migrate the calls table.
 const pgSchema = `
 CREATE TABLE IF NOT EXISTS calls (
     id          TEXT PRIMARY KEY,
@@ -131,8 +142,10 @@ CREATE TABLE IF NOT EXISTS calls (
     status      TEXT        NOT NULL DEFAULT 'ongoing',
     started_at  BIGINT      NOT NULL,
     ended_at    BIGINT,
-    transcript  JSONB       NOT NULL DEFAULT '[]'
-);`
+    transcript  JSONB       NOT NULL DEFAULT '[]',
+    config      JSONB
+);
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS config JSONB;`
 
 // PGCallStore persists call records in Postgres using pgx/v5.
 type PGCallStore struct {
@@ -169,6 +182,18 @@ func (s *PGCallStore) Start(id, source string) {
 	)
 }
 
+func (s *PGCallStore) SetConfig(id string, cfg CallConfig) {
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return
+	}
+	ctx := context.Background()
+	_, _ = s.pool.Exec(ctx,
+		`UPDATE calls SET config = $2::jsonb WHERE id = $1`,
+		id, raw,
+	)
+}
+
 func (s *PGCallStore) AppendTurn(id string, entry TurnEntry) {
 	if entry.Text == "" {
 		return
@@ -196,7 +221,7 @@ func (s *PGCallStore) End(id string) {
 func (s *PGCallStore) List() []CallRecord {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, source, status, started_at, ended_at, transcript
+		`SELECT id, source, status, started_at, ended_at, transcript, config
 		 FROM calls ORDER BY started_at DESC`,
 	)
 	if err != nil {
@@ -209,7 +234,7 @@ func (s *PGCallStore) List() []CallRecord {
 func (s *PGCallStore) Get(id string) (CallRecord, bool) {
 	ctx := context.Background()
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, source, status, started_at, ended_at, transcript
+		`SELECT id, source, status, started_at, ended_at, transcript, config
 		 FROM calls WHERE id = $1`,
 		id,
 	)
@@ -231,15 +256,22 @@ func scanRows(rows interface {
 	var out []CallRecord
 	for rows.Next() {
 		var (
-			r       CallRecord
-			rawJSON []byte
+			r         CallRecord
+			rawJSON   []byte
+			rawConfig []byte
 		)
-		if err := rows.Scan(&r.ID, &r.Source, &r.Status, &r.StartedAt, &r.EndedAt, &rawJSON); err != nil {
+		if err := rows.Scan(&r.ID, &r.Source, &r.Status, &r.StartedAt, &r.EndedAt, &rawJSON, &rawConfig); err != nil {
 			continue
 		}
 		_ = json.Unmarshal(rawJSON, &r.Transcript)
 		if r.Transcript == nil {
 			r.Transcript = []TurnEntry{}
+		}
+		if len(rawConfig) > 0 {
+			var cfg CallConfig
+			if json.Unmarshal(rawConfig, &cfg) == nil {
+				r.Config = &cfg
+			}
 		}
 		out = append(out, r)
 	}
